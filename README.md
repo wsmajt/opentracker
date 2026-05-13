@@ -24,7 +24,7 @@ opentracker login opencode
 
 # Export cookies in Netscape format to ~/.config/opentracker/opencode-cookies.txt
 # Then fetch usage
-opentracker fetch opencode
+opentracker fetch opencode-go
 ```
 
 ## Installation
