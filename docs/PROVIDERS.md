@@ -5,7 +5,6 @@
 | Provider | Description | Config key |
 |----------|-------------|------------|
 | `opencode-go` | OpenCode Go plan | `opencode` (shared) |
-| `opencode-zen` | OpenCode Zen plan | `opencode` (shared) |
 
 All OpenCode plans share the same workspace configuration and cookies.
 

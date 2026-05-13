@@ -31,7 +31,6 @@ Each provider has its own cache file (e.g., `opencode-go.json`). Cache TTL is **
 
 Cookies must be in **Netscape HTTP Cookie File** format. You can export them using browser extensions like:
 - [Export Cookies](https://addons.mozilla.org/en-US/firefox/addon/export-cookies-txt/) for Firefox
-- [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckofkjlafpdgddngjgajdo) for Chrome
 
 ## First-time setup
 
@@ -39,7 +38,7 @@ When you run `opentracker fetch opencode-go` for the first time and no configura
 
 ```
 Provider "opencode-go" is not configured.
-Workspace ID: wrk_01KPV9Z3N4E374YV6TXMN90EA5
+Workspace ID: wrk_...
 Config saved.
 ```
 

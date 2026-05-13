@@ -1,12 +1,11 @@
 # OpenTracker
 
-A lightweight CLI tool for tracking AI provider usage limits. Currently supports **OpenCode** (Go and Zen plans), with a modular architecture designed for easy extension to additional providers.
+A lightweight CLI tool for tracking AI provider usage limits. Currently supports **OpenCode** (Go plan), with a modular architecture designed for easy extension to additional providers.
 
 ## Features
 
 - **Usage tracking** — Monitor rolling, weekly, and monthly usage percentages
-- **Multiple plans** — Support for different OpenCode plans (go, zen) sharing the same workspace and cookies
-- **Smart caching** — 90-second TTL cache to avoid unnecessary requests
+- **Multiple plans** — Support for different OpenCode plans (go, zen in the future) sharing the same workspace and cookies
 - **Interactive setup** — Prompts for workspace ID on first use, saves configuration automatically
 - **Session handling** — Uses exported Netscape-format cookies for authentication
 - **Clean JSON output** — Pipe-friendly output for integration with other tools
@@ -21,11 +20,11 @@ make build
 make install
 
 # Log in to OpenCode (opens browser)
-opentracker login opencode-go
+opentracker login opencode
 
 # Export cookies in Netscape format to ~/.config/opentracker/opencode-cookies.txt
 # Then fetch usage
-opentracker fetch opencode-go
+opentracker fetch opencode
 ```
 
 ## Installation
@@ -33,7 +32,7 @@ opentracker fetch opencode-go
 ### From source
 
 ```bash
-git clone https://github.com/smajt-archlinux/opentracker.git
+git clone https://github.com/wsmajt/opentracker.git
 cd opentracker
 make build
 sudo make install
@@ -42,7 +41,7 @@ sudo make install
 ### AUR (Arch Linux)
 
 ```bash
-yay -S opentracker
+soon
 ```
 
 ## Usage
@@ -63,7 +62,7 @@ opentracker version
 ### Login
 
 ```bash
-opentracker login opencode-go
+opentracker login opencode
 ```
 
 This will open `https://opencode.ai/go` in your browser. After logging in, export your cookies in **Netscape format** to `~/.config/opentracker/opencode-cookies.txt`.
