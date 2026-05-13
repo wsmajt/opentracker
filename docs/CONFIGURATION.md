@@ -11,7 +11,7 @@ OpenTracker stores its configuration and cache in standard XDG directories.
 {
   "providers": {
     "opencode": {
-      "workspace": "wrk_01KPV9Z3N4E374YV6TXMN90EA5"
+      "workspace": "wrk_..."
     }
   }
 }
