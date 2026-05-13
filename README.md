@@ -4,11 +4,11 @@ A lightweight CLI tool for tracking AI provider usage limits. Currently supports
 
 ## Features
 
-- **Usage tracking** — Monitor rolling, weekly, and monthly usage percentages
-- **Multiple plans** — Support for different OpenCode plans (go, zen in the future) sharing the same workspace and cookies
-- **Interactive setup** — Prompts for workspace ID on first use, saves configuration automatically
-- **Session handling** — Uses exported Netscape-format cookies for authentication
-- **Clean JSON output** — Pipe-friendly output for integration with other tools
+- **Usage tracking** - Monitor rolling, weekly, and monthly usage percentages
+- **Multiple plans** - Support for different OpenCode plans (go, zen in the future) sharing the same workspace and cookies
+- **Interactive setup** - Prompts for workspace ID on first use, saves configuration automatically
+- **Session handling** - Uses exported Netscape-format cookies for authentication
+- **Clean JSON output** - Pipe-friendly output for integration with other tools
 
 ## Quick Start
 
