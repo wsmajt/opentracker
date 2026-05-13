@@ -41,7 +41,7 @@ sudo make install
 ### AUR (Arch Linux)
 
 ```bash
-soon
+yay -S opentracker-cli
 ```
 
 ## Usage
