@@ -50,7 +50,7 @@ The workspace ID can be found in your OpenCode dashboard URL: `https://opencode.
 
 This means your cookies are invalid or expired. To fix:
 
-1. Run `opentracker login opencode-go`
+1. Run `opentracker login opencode`
 2. Log in to OpenCode in your browser
 3. Export fresh cookies to `~/.config/opentracker/opencode-cookies.txt`
 4. Run `opentracker fetch opencode-go --force`
