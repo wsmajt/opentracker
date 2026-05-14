@@ -11,11 +11,28 @@ import (
 )
 
 // ParseHTML extracts usage data from OpenCode HTML.
+// It uses a two-phase approach: first parses HTML structure, then
+// looks for embedded JS with exact resetInSec values.
 func ParseHTML(html string) (model.Usage, error) {
-	// Remove HTML comments (including <!--$--> and <!--/-->)
+	// Remove HTML comments
 	html = regexp.MustCompile(`<!--.*?-->`).ReplaceAllString(html, "")
 
-	// Split by usage-item blocks
+	// Phase 1: Parse HTML structure
+	usage, err := parseHTMLStructure(html)
+	if err != nil {
+		return model.Usage{}, err
+	}
+
+	// Phase 2: Try to extract exact resetInSec from embedded JS
+	jsData := extractJSEmbeddedData(html)
+	if jsData != nil {
+		applyJSEmbeddedData(usage, jsData)
+	}
+
+	return usage, nil
+}
+
+func parseHTMLStructure(html string) (model.Usage, error) {
 	parts := regexp.MustCompile(`<div\s+data-slot="usage-item"[^>]*>`).Split(html, -1)
 	if len(parts) < 2 {
 		return model.Usage{}, fmt.Errorf("no usage items found")
@@ -23,8 +40,7 @@ func ParseHTML(html string) (model.Usage, error) {
 
 	var entries = make(map[string]*model.Entry)
 
-	for i, part := range parts[1:] {
-		// Find the end of this block (next usage-item or end)
+	for _, part := range parts[1:] {
 		endIdx := strings.Index(part, `<div data-slot="usage-item"`)
 		if endIdx != -1 {
 			part = part[:endIdx]
@@ -58,7 +74,6 @@ func ParseHTML(html string) (model.Usage, error) {
 		resetText := ""
 		if resetMatch != nil {
 			resetText = strings.TrimSpace(resetMatch[1])
-			// Strip any remaining tag-like fragments and normalize whitespace
 			resetText = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(resetText, " ")
 			resetText = regexp.MustCompile(`\s+`).ReplaceAllString(resetText, " ")
 			resetText = strings.TrimSpace(resetText)
@@ -74,31 +89,81 @@ func ParseHTML(html string) (model.Usage, error) {
 		}
 
 		labelLower := strings.ToLower(label)
-		if strings.Contains(labelLower, "kroczące") || strings.Contains(labelLower, "session") || strings.Contains(labelLower, "rolling") {
-			entries["primary"] = entry
-		} else if strings.Contains(labelLower, "tygodniowe") || strings.Contains(labelLower, "weekly") {
-			entries["secondary"] = entry
-		} else if strings.Contains(labelLower, "miesięczne") || strings.Contains(labelLower, "monthly") {
-			entries["tertiary"] = entry
-		} else {
-			entries["primary"] = entry
+		switch {
+		case strings.Contains(labelLower, "kroczące") || strings.Contains(labelLower, "session") || strings.Contains(labelLower, "rolling"):
+			entries["rolling"] = entry
+		case strings.Contains(labelLower, "tygodniowe") || strings.Contains(labelLower, "weekly"):
+			entries["weekly"] = entry
+		case strings.Contains(labelLower, "miesięczne") || strings.Contains(labelLower, "monthly"):
+			entries["monthly"] = entry
+		default:
+			entries["rolling"] = entry
 		}
-
-		_ = i // silence unused variable warning if any
 	}
 
 	usage := model.Usage{}
-	if entries["primary"] != nil {
-		usage.Primary = entries["primary"]
+	if entries["rolling"] != nil {
+		usage.Rolling = entries["rolling"]
 	}
-	if entries["secondary"] != nil {
-		usage.Secondary = entries["secondary"]
+	if entries["weekly"] != nil {
+		usage.Weekly = entries["weekly"]
 	}
-	if entries["tertiary"] != nil {
-		usage.Tertiary = entries["tertiary"]
+	if entries["monthly"] != nil {
+		usage.Monthly = entries["monthly"]
 	}
 
 	return usage, nil
+}
+
+// jsWindowData holds exact values extracted from embedded JS.
+type jsWindowData struct {
+	usagePercent int
+	resetInSec   int
+}
+
+// extractJSEmbeddedData looks for SolidJS embedded data like:
+// $R[30]={status:"ok",resetInSec:13642,usagePercent:14}
+func extractJSEmbeddedData(html string) []*jsWindowData {
+	pattern := regexp.MustCompile(`\$R\[\d+\]=\{[^}]*status:"ok",resetInSec:(\d+),usagePercent:(\d+)[^}]*\}`)
+	matches := pattern.FindAllStringSubmatch(html, -1)
+
+	var result []*jsWindowData
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		resetInSec, _ := strconv.Atoi(m[1])
+		usagePercent, _ := strconv.Atoi(m[2])
+		result = append(result, &jsWindowData{
+			usagePercent: usagePercent,
+			resetInSec:   resetInSec,
+		})
+	}
+	return result
+}
+
+// applyJSEmbeddedData overwrites WindowMinutes and ResetsAt with exact JS values.
+// Order: first match = rolling, second = weekly, third = monthly.
+func applyJSEmbeddedData(usage model.Usage, data []*jsWindowData) {
+	for i, d := range data {
+		var entry *model.Entry
+		switch i {
+		case 0:
+			entry = usage.Rolling
+		case 1:
+			entry = usage.Weekly
+		case 2:
+			entry = usage.Monthly
+		default:
+			continue
+		}
+		if entry == nil {
+			continue
+		}
+		entry.UsedPercent = d.usagePercent
+		entry.WindowMinutes = d.resetInSec / 60
+		entry.ResetsAt = time.Now().UTC().Add(time.Duration(d.resetInSec) * time.Second).Format(time.RFC3339)
+	}
 }
 
 func parseResetTime(text string) (string, int) {

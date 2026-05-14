@@ -35,6 +35,14 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+func (c *Config) UpdateProvider(name string, raw json.RawMessage) error {
+	if c.Providers == nil {
+		c.Providers = make(map[string]json.RawMessage)
+	}
+	c.Providers[name] = raw
+	return c.Save()
+}
+
 func (c *Config) Save() error {
 	home, err := os.UserHomeDir()
 	if err != nil {

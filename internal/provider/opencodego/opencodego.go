@@ -2,6 +2,7 @@ package opencodego
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,12 +43,21 @@ func New(appCfg *config.Config, plan string) (provider.Provider, error) {
 		return nil, fmt.Errorf("invalid opencode config: %w", err)
 	}
 
-	if cfg.Workspace == "" {
-		return nil, fmt.Errorf("opencode workspace not set")
-	}
-
 	home, _ := os.UserHomeDir()
 	cookieFile := filepath.Join(home, ".config", "opentracker", "opencode-cookies.txt")
+
+	// Auto-detect workspace if not configured
+	if cfg.Workspace == "" {
+		workspaceID, err := opencode.DetectWorkspaceID(cookieFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot detect workspace: %w; run 'opentracker login opencode' or set workspace in config", err)
+		}
+		cfg.Workspace = workspaceID
+
+		// Save to config
+		updated, _ := json.Marshal(cfg)
+		_ = appCfg.UpdateProvider("opencode", updated)
+	}
 
 	f, err := fetcher.New(cookieFile)
 	if err != nil {

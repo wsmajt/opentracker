@@ -1,4 +1,4 @@
-VERSION ?= 1.2.1
+VERSION ?= 1.2.2
 BINARY = opentracker
 PREFIX ?= /usr
 

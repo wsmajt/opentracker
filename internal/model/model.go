@@ -7,9 +7,9 @@ type Entry struct {
 }
 
 type Usage struct {
-	Primary   *Entry `json:"primary,omitempty"`
-	Secondary *Entry `json:"secondary,omitempty"`
-	Tertiary  *Entry `json:"tertiary,omitempty"`
+	Rolling *Entry `json:"rolling,omitempty"`
+	Weekly  *Entry `json:"weekly,omitempty"`
+	Monthly *Entry `json:"monthly,omitempty"`
 }
 
 type ProviderResult struct {
