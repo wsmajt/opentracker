@@ -1,11 +1,16 @@
 package cmd
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 
 	"github.com/spf13/cobra"
+
+	"opentracker/internal/browsercookies"
 )
 
 var loginCmd = &cobra.Command{
@@ -35,11 +40,26 @@ var loginCmd = &cobra.Command{
 		}
 
 		fmt.Println()
-		fmt.Println("After logging in, export your cookies (Netscape format) to:")
-		fmt.Printf("  ~/.config/opentracker/%s-cookies.txt\n", provider)
-		fmt.Println()
-		fmt.Println("You can use browser extensions like 'Export Cookies' for Firefox/Chrome.")
+		fmt.Println("After logging in, press Enter to automatically import cookies...")
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
 
+		cookies, source, err := browsercookies.ImportOpenCode(context.Background(), func(msg string) {
+			fmt.Println(msg)
+		})
+		if err != nil {
+			fmt.Printf("Automatic import failed: %v\n", err)
+			fmt.Println()
+			fmt.Println("Please export your cookies manually (Netscape format) to:")
+			fmt.Printf("  ~/.config/opentracker/%s-cookies.txt\n", provider)
+			fmt.Println("You can use browser extensions like 'Export Cookies' for Firefox/Chrome.")
+			return nil
+		}
+
+		if err := browsercookies.SaveOpenCodeCookies(cookies); err != nil {
+			return fmt.Errorf("failed to save cookies: %w", err)
+		}
+
+		fmt.Printf("Successfully imported %d cookies from %s\n", len(cookies), source)
 		return nil
 	},
 }
