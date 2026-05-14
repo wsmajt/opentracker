@@ -12,8 +12,8 @@ import (
 
 // ParseHTML extracts usage data from OpenCode HTML.
 func ParseHTML(html string) (model.Usage, error) {
-	// Remove HTML comments
-	html = regexp.MustCompile(`<!--\$?|--/?>`).ReplaceAllString(html, "")
+	// Remove HTML comments (including <!--$--> and <!--/-->)
+	html = regexp.MustCompile(`<!--.*?-->`).ReplaceAllString(html, "")
 
 	// Split by usage-item blocks
 	parts := regexp.MustCompile(`<div\s+data-slot="usage-item"[^>]*>`).Split(html, -1)
@@ -58,6 +58,10 @@ func ParseHTML(html string) (model.Usage, error) {
 		resetText := ""
 		if resetMatch != nil {
 			resetText = strings.TrimSpace(resetMatch[1])
+			// Strip any remaining tag-like fragments and normalize whitespace
+			resetText = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(resetText, " ")
+			resetText = regexp.MustCompile(`\s+`).ReplaceAllString(resetText, " ")
+			resetText = strings.TrimSpace(resetText)
 			resetText = regexp.MustCompile(`(?i)^.*?Resetuje\s+się\s+za\s*`).ReplaceAllString(resetText, "")
 		}
 
