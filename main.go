@@ -4,7 +4,7 @@ import (
 	"opentracker/cmd"
 
 	// Register opencode providers.
-	_ "opentracker/internal/provider/opencodego"
+	_ "opentracker/internal/provider/opencode"
 )
 
 var version = "dev"

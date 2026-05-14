@@ -6,21 +6,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"opentracker/internal/model"
 )
 
-// ParseHTML extracts usage data from OpenCode HTML.
+// ParseHTML extracts usage data from OpenCode Go HTML.
 // It uses a two-phase approach: first parses HTML structure, then
 // looks for embedded JS with exact resetInSec values.
-func ParseHTML(html string) (model.Usage, error) {
+func ParseHTML(html string) (GoUsage, error) {
 	// Remove HTML comments
 	html = regexp.MustCompile(`<!--.*?-->`).ReplaceAllString(html, "")
 
 	// Phase 1: Parse HTML structure
 	usage, err := parseHTMLStructure(html)
 	if err != nil {
-		return model.Usage{}, err
+		return GoUsage{}, err
 	}
 
 	// Phase 2: Try to extract exact resetInSec from embedded JS
@@ -32,13 +30,13 @@ func ParseHTML(html string) (model.Usage, error) {
 	return usage, nil
 }
 
-func parseHTMLStructure(html string) (model.Usage, error) {
+func parseHTMLStructure(html string) (GoUsage, error) {
 	parts := regexp.MustCompile(`<div\s+data-slot="usage-item"[^>]*>`).Split(html, -1)
 	if len(parts) < 2 {
-		return model.Usage{}, fmt.Errorf("no usage items found")
+		return GoUsage{}, fmt.Errorf("no usage items found")
 	}
 
-	var entries = make(map[string]*model.Entry)
+	var entries = make(map[string]*UsageWindow)
 
 	for _, part := range parts[1:] {
 		endIdx := strings.Index(part, `<div data-slot="usage-item"`)
@@ -82,7 +80,7 @@ func parseHTMLStructure(html string) (model.Usage, error) {
 
 		resetsAt, windowMinutes := parseResetTime(resetText)
 
-		entry := &model.Entry{
+		entry := &UsageWindow{
 			UsedPercent:   usedPercent,
 			ResetsAt:      resetsAt,
 			WindowMinutes: windowMinutes,
@@ -101,7 +99,7 @@ func parseHTMLStructure(html string) (model.Usage, error) {
 		}
 	}
 
-	usage := model.Usage{}
+	usage := GoUsage{}
 	if entries["rolling"] != nil {
 		usage.Rolling = entries["rolling"]
 	}
@@ -144,9 +142,9 @@ func extractJSEmbeddedData(html string) []*jsWindowData {
 
 // applyJSEmbeddedData overwrites WindowMinutes and ResetsAt with exact JS values.
 // Order: first match = rolling, second = weekly, third = monthly.
-func applyJSEmbeddedData(usage model.Usage, data []*jsWindowData) {
+func applyJSEmbeddedData(usage GoUsage, data []*jsWindowData) {
 	for i, d := range data {
-		var entry *model.Entry
+		var entry *UsageWindow
 		switch i {
 		case 0:
 			entry = usage.Rolling

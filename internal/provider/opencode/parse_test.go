@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"opentracker/internal/model"
 )
 
 const sampleHTML = `<div data-slot="usage"><div data-slot="usage-item"><div data-slot="usage-header"><span data-slot="usage-label">Użycie kroczące</span><span data-slot="usage-value"><!--$-->1<!--/-->%</span></div><div data-slot="progress"><div data-slot="progress-bar" style="width:1%"></div></div><span data-slot="reset-time"><!--$-->Resetuje się za<!--/--> <!--$-->4 godzin(y) 19 minut(y)<!--/--></span></div><div data-slot="usage-item"><div data-slot="usage-header"><span data-slot="usage-label">Użycie tygodniowe</span><span data-slot="usage-value"><!--$-->0<!--/-->%</span></div><div data-slot="progress"><div data-slot="progress-bar" style="width:0%"></div></div><span data-slot="reset-time"><!--$-->Resetuje się za<!--/--> <!--$-->3 dni 23 godzin(y)<!--/--></span></div><div data-slot="usage-item"><div data-slot="usage-header"><span data-slot="usage-label">Użycie miesięczne</span><span data-slot="usage-value"><!--$-->0<!--/-->%</span></div><div data-slot="progress"><div data-slot="progress-bar" style="width:0%"></div></div><span data-slot="reset-time"><!--$-->Resetuje się za<!--/--> <!--$-->30 dni 21 godzin(y)<!--/--></span></div></div>`
@@ -57,7 +55,7 @@ func TestParseHTML_Sample(t *testing.T) {
 
 	// All resetsAt should be in the future
 	now := time.Now().UTC()
-	for _, entry := range []*model.Entry{usage.Rolling, usage.Weekly, usage.Monthly} {
+	for _, entry := range []*UsageWindow{usage.Rolling, usage.Weekly, usage.Monthly} {
 		ts, err := time.Parse(time.RFC3339, entry.ResetsAt)
 		if err != nil {
 			t.Errorf("cannot parse resetsAt %q: %v", entry.ResetsAt, err)

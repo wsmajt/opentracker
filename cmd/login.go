@@ -3,14 +3,19 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"opentracker/internal/browsercookies"
+	"opentracker/internal/config"
+	"opentracker/internal/provider/opencode"
 )
 
 var verbose bool
@@ -67,6 +72,28 @@ var loginCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Successfully imported %d cookies from %s\n", len(cookies), source)
+
+		// Auto-detect workspace
+		home, _ := os.UserHomeDir()
+		cookieFile := filepath.Join(home, ".config", "opentracker", "opencode-cookies.txt")
+		workspaceID, err := opencode.DetectWorkspaceID(cookieFile)
+		if err != nil {
+			fmt.Printf("Could not auto-detect workspace: %v\n", err)
+			fmt.Print("Workspace ID (or press Enter to skip): ")
+			workspaceID, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+			workspaceID = strings.TrimSpace(workspaceID)
+		}
+
+		if workspaceID != "" {
+			// Save to config
+			cfg, _ := config.Load()
+			if cfg != nil {
+				raw, _ := json.Marshal(map[string]string{"workspace": workspaceID})
+				_ = cfg.UpdateProvider("opencode", raw)
+				fmt.Printf("Workspace saved: %s\n", workspaceID)
+			}
+		}
+
 		return nil
 	},
 }

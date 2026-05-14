@@ -68,7 +68,7 @@ opentracker login opencode
 opentracker login opencode --verbose
 ```
 
-This will open `https://opencode.ai/go` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies.
+This will open `https://opencode.ai/go` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies, then detect and save your workspace ID.
 
 ### Example output
 
@@ -77,20 +77,20 @@ This will open `https://opencode.ai/go` in your browser. After logging in, press
   {
     "provider": "opencode-go",
     "usage": {
-      "primary": {
-        "usedPercent": 10,
-        "resetsAt": "2026-05-13T23:47:22Z",
-        "windowMinutes": 201
+      "rolling": {
+        "usedPercent": 35,
+        "resetsAt": "2026-05-14T23:46:05Z",
+        "windowMinutes": 175
       },
-      "secondary": {
-        "usedPercent": 7,
-        "resetsAt": "2026-05-17T23:26:22Z",
-        "windowMinutes": 5940
+      "weekly": {
+        "usedPercent": 38,
+        "resetsAt": "2026-05-18T00:00:00Z",
+        "windowMinutes": 4509
       },
-      "tertiary": {
-        "usedPercent": 25,
-        "resetsAt": "2026-05-22T18:26:22Z",
-        "windowMinutes": 12840
+      "monthly": {
+        "usedPercent": 41,
+        "resetsAt": "2026-05-22T19:18:53Z",
+        "windowMinutes": 11442
       }
     }
   }

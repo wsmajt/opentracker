@@ -72,7 +72,7 @@ func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "#HttpOnly_") {
 			continue
 		}
 
@@ -82,6 +82,8 @@ func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
 		}
 
 		domain := fields[0]
+		// Strip #HttpOnly_ prefix from domain (Netscape format for HttpOnly cookies)
+		domain = strings.TrimPrefix(domain, "#HttpOnly_")
 		// fields[1] = flag (TRUE/FALSE)
 		path := fields[2]
 		secure := fields[3] == "TRUE"
@@ -107,6 +109,18 @@ func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
 	}
 
 	return cookies, scanner.Err()
+}
+
+// CookieHeader returns a semicolon-separated cookie string for the given host.
+func (f *Fetcher) CookieHeader(host string) string {
+	host = strings.ToLower(host)
+	var parts []string
+	for _, c := range f.cookies {
+		if domainMatches(host, c.Domain) {
+			parts = append(parts, fmt.Sprintf("%s=%s", c.Name, c.Value))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func domainMatches(host, domain string) bool {
