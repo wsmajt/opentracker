@@ -13,6 +13,8 @@ import (
 	"opentracker/internal/browsercookies"
 )
 
+var verbose bool
+
 var loginCmd = &cobra.Command{
 	Use:   "login <provider>",
 	Short: "Open the login page for a provider",
@@ -43,9 +45,14 @@ var loginCmd = &cobra.Command{
 		fmt.Println("After logging in, press Enter to automatically import cookies...")
 		bufio.NewReader(os.Stdin).ReadBytes('\n')
 
-		cookies, source, err := browsercookies.ImportOpenCode(context.Background(), func(msg string) {
-			fmt.Println(msg)
-		})
+		var logger func(string)
+		if verbose {
+			logger = func(msg string) {
+				fmt.Println(msg)
+			}
+		}
+
+		cookies, source, err := browsercookies.ImportOpenCode(context.Background(), logger)
 		if err != nil {
 			fmt.Printf("Automatic import failed: %v\n", err)
 			fmt.Println()
@@ -66,4 +73,5 @@ var loginCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(loginCmd)
+	loginCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show detailed browser scanning output")
 }
