@@ -1,6 +1,7 @@
+version: "2"
+
 run:
   timeout: 5m
-  issues-exit-code: 1
   tests: true
 
 linters:
@@ -12,25 +13,23 @@ linters:
     - staticcheck
     - unused
     - misspell
-    - typecheck
 
 linters-settings:
   errcheck:
     check-type-assertions: false
     check-blank: false
   govet:
-    enable-all: false
-    disable:
-      - shadow
     enable:
       - printf
       - structtag
       - unreachable
+    disable:
+      - shadow
   staticcheck:
-    checks: ["all"]
+    checks:
+      - all
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 50
   max-same-issues: 10
 
