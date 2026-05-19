@@ -4,8 +4,8 @@ import "testing"
 
 func TestIsValidWorkspaceID(t *testing.T) {
 	tests := []struct {
-		id      string
-		valid   bool
+		id    string
+		valid bool
 	}{
 		{"wrk_123", true},
 		{"wrk_", false},
