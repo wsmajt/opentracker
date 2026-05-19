@@ -121,3 +121,6 @@ Full documentation is available in the [GitHub Wiki](https://github.com/wsmajt/o
 ## License
 
 MIT License — see [LICENSE](LICENSE)
+
+## Credits
+[steipete](https://github.com/steipete/CodexBar) - CodexBar
