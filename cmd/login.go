@@ -21,14 +21,20 @@ import (
 var verbose bool
 
 var loginCmd = &cobra.Command{
-	Use:   "login <provider>",
+	Use:   "login [provider]",
 	Short: "Open the login page for a provider",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			printProviderList("login")
+			return nil
+		}
 		provider := args[0]
 
 		var url string
 		switch provider {
+		case "codex":
+			return loginCodex()
 		case "opencode":
 			url = "https://opencode.ai/go"
 		default:
@@ -96,6 +102,18 @@ var loginCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func loginCodex() error {
+	cmd := exec.Command("codex", "login")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("codex login failed: %w", err)
+	}
+	fmt.Println("Codex login complete. You can now run: opentracker fetch codex")
+	return nil
 }
 
 func init() {

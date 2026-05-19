@@ -18,10 +18,11 @@ var fetchCmd = &cobra.Command{
 	Short: "Fetch usage data from a provider",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		provider := "all"
-		if len(args) > 0 {
-			provider = args[0]
+		if len(args) == 0 {
+			printProviderList("fetch")
+			return nil
 		}
+		provider := args[0]
 
 		application, err := app.New()
 		if err != nil {

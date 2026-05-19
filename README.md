@@ -1,11 +1,12 @@
 # OpenTracker
 
-A lightweight CLI tool for tracking AI provider usage limits. Currently supports **OpenCode** (Go plan), with a modular architecture designed for easy extension to additional providers.
+A lightweight CLI tool for tracking AI provider usage limits. Currently supports **OpenCode** (Go plan) and **Codex** (OpenAI/Codex CLI), with a modular architecture designed for easy extension to additional providers.
 
 ## Features
 
 - **Usage tracking** - Monitor rolling, weekly, and monthly usage percentages
-- **Multiple plans** - Support for different OpenCode plans (go, zen in the future) sharing the same workspace and cookies
+- **Multiple providers** - OpenCode (Go/Zen plans) and Codex (OpenAI usage via Codex CLI auth)
+- **Multiple plans** - Support for different OpenCode plans (go, zen) sharing the same workspace and cookies
 - **Interactive setup** - Prompts for workspace ID on first use, saves configuration automatically
 - **Automatic cookie import** - Scans Chrome, Firefox, Zen Browser, and more for session cookies
 - **Clean JSON output** - Pipe-friendly output for integration with other tools
@@ -22,8 +23,12 @@ make install
 # Log in to OpenCode (auto-imports cookies from your browser)
 opentracker login opencode
 
+# Or log in to Codex (runs 'codex login')
+opentracker login codex
+
 # Fetch usage
 opentracker fetch opencode-go
+opentracker fetch codex
 ```
 
 ## Installation
@@ -50,9 +55,11 @@ yay -S opentracker-cli
 ```bash
 # Fetch current usage (cached for 90 seconds)
 opentracker fetch opencode-go
+opentracker fetch codex
 
 # Force refresh (skip cache)
 opentracker fetch opencode-go --force
+opentracker fetch codex --force
 
 # Check version
 opentracker version
@@ -61,14 +68,19 @@ opentracker version
 ### Login
 
 ```bash
-# Automatic cookie import (default — scans browsers silently)
+# OpenCode: automatic cookie import (scans browsers silently)
 opentracker login opencode
+
+# Codex: runs 'codex login' to authenticate
+opentracker login codex
 
 # With verbose output (shows which browsers were checked)
 opentracker login opencode --verbose
 ```
 
-This will open `https://opencode.ai/go` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies, then detect and save your workspace ID.
+**OpenCode** will open `https://opencode.ai/go` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies, then detect and save your workspace ID.
+
+**Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
 
 ### Example output
 
@@ -104,6 +116,7 @@ Full documentation is available in the [GitHub Wiki](https://github.com/wsmajt/o
 - [Configuration](https://github.com/wsmajt/opentracker/wiki/Configuration) — Config file format, locations, and troubleshooting
 - [Providers](https://github.com/wsmajt/opentracker/wiki/Providers) — Provider system overview and how to add new ones
 - [OpenCode](https://github.com/wsmajt/opentracker/wiki/OpenCode) — OpenCode provider details, login, and usage
+- [Codex](https://github.com/wsmajt/opentracker/wiki/Codex) — Codex/OpenAI provider details, login, and usage
 
 ## License
 

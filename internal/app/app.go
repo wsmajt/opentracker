@@ -15,6 +15,7 @@ import (
 	"opentracker/internal/model"
 	"opentracker/internal/output"
 	"opentracker/internal/provider"
+	"opentracker/internal/provider/codex"
 	"opentracker/internal/provider/opencode"
 )
 
@@ -51,23 +52,27 @@ func (a *App) Fetch(ctx context.Context, providerName string, force bool) error 
 		return a.fetchAll(ctx, force)
 	}
 
-	return a.fetchOne(ctx, providerName, force)
+	return a.fetchOne(ctx, providerName, force, true)
 }
 
-func (a *App) fetchOne(ctx context.Context, providerName string, force bool) error {
+func (a *App) fetchOne(ctx context.Context, providerName string, force bool, prompt bool) error {
 	cacheKey := providerName
+
+	// Ensure provider is configured before reading cache so auth-sensitive providers
+	// do not return data for a stale or different account.
+	if !a.isConfigured(providerName) {
+		if !prompt {
+			return fmt.Errorf("provider is not configured")
+		}
+		if err := a.promptSetup(providerName); err != nil {
+			return err
+		}
+	}
 
 	if !force {
 		var cached []model.ProviderResult
 		if a.cache.Get(cacheKey, &cached) {
 			return output.Print(cached)
-		}
-	}
-
-	// Ensure provider is configured
-	if !a.isConfigured(providerName) {
-		if err := a.promptSetup(providerName); err != nil {
-			return err
 		}
 	}
 
@@ -106,6 +111,9 @@ func (a *App) isConfigured(providerName string) bool {
 			return true
 		}
 	}
+	if providerName == "codex" && codex.HasConfiguredAuth() {
+		return true
+	}
 	_, ok := a.config.Providers[providerName]
 	return ok
 }
@@ -118,7 +126,11 @@ func (a *App) fetchAll(ctx context.Context, force bool) error {
 
 	var results []model.ProviderResult
 	for _, name := range names {
-		if err := a.fetchOne(ctx, name, force); err != nil {
+		if !a.isConfigured(name) {
+			fmt.Fprintf(os.Stderr, "skipping %s: provider is not configured\n", name)
+			continue
+		}
+		if err := a.fetchOne(ctx, name, force, false); err != nil {
 			fmt.Fprintf(os.Stderr, "error fetching %s: %v\n", name, err)
 			continue
 		}
@@ -132,6 +144,9 @@ func (a *App) fetchAll(ctx context.Context, force bool) error {
 
 func (a *App) promptSetup(providerName string) error {
 	fmt.Printf("Provider %q is not configured.\n", providerName)
+	if providerName == "codex" {
+		return fmt.Errorf("codex auth is not configured; run 'opentracker login codex' or 'codex login'")
+	}
 
 	reader := bufio.NewReader(os.Stdin)
 
