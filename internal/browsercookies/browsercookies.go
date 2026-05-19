@@ -59,7 +59,7 @@ func importViaKooky(ctx context.Context, logger func(string)) ([]*http.Cookie, s
 	}
 
 	for _, store := range stores {
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		browserName := store.Browser()
 		profile := store.Profile()
@@ -234,7 +234,7 @@ func SaveOpenCodeCookies(cookies []*http.Cookie) error {
 	if err != nil {
 		return fmt.Errorf("cannot open cookie file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	kooky.ExportCookies(context.Background(), f, cookies)
 	return nil

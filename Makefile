@@ -2,7 +2,7 @@ VERSION ?= 1.2.2
 BINARY = opentracker
 PREFIX ?= /usr
 
-.PHONY: build install clean
+.PHONY: build install clean test coverage
 
 build:
 	go build -ldflags "-X main.version=$(VERSION) -s -w" -o $(BINARY)
@@ -12,3 +12,10 @@ install:
 
 clean:
 	rm -f $(BINARY)
+
+test:
+	go test ./...
+
+coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out

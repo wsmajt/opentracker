@@ -34,7 +34,7 @@ func (c *Cache) Get(key string, dest interface{}) bool {
 	}
 
 	if time.Now().After(it.ExpiresAt) {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return false
 	}
 

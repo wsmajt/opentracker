@@ -66,7 +66,7 @@ func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
 		}
 		return nil, fmt.Errorf("cannot open cookie file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var cookies []*http.Cookie
 	scanner := bufio.NewScanner(f)

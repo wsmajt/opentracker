@@ -39,16 +39,16 @@ var loginCmd = &cobra.Command{
 
 		switch runtime.GOOS {
 		case "linux":
-			exec.Command("xdg-open", url).Start()
+			_ = exec.Command("xdg-open", url).Start()
 		case "darwin":
-			exec.Command("open", url).Start()
+			_ = exec.Command("open", url).Start()
 		case "windows":
-			exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+			_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		}
 
 		fmt.Println()
 		fmt.Println("After logging in, press Enter to automatically import cookies...")
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
 
 		var logger func(string)
 		if verbose {
