@@ -47,7 +47,7 @@ func (o *CodexProvider) Fetch(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("cannot read Codex auth: %w", err)
 	}
 	if auth.AccessToken == "" {
-		return "", fmt.Errorf("Codex auth not configured; run 'opentracker login codex', 'codex login', or set %s", envAccessToken)
+		return "", fmt.Errorf("codex auth not configured; run 'opentracker login codex', 'codex login', or set %s", envAccessToken)
 	}
 
 	body, err := o.get(ctx, usageURL, auth)
@@ -103,13 +103,13 @@ func (o *CodexProvider) get(ctx context.Context, url string, auth authSource) ([
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return body, nil
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, fmt.Errorf("Codex authentication expired or unauthorized (HTTP %d); run 'opentracker login codex' or 'codex login'", resp.StatusCode)
+		return nil, fmt.Errorf("codex authentication expired or unauthorized (HTTP %d); run 'opentracker login codex' or 'codex login'", resp.StatusCode)
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return nil, fmt.Errorf("Codex rate limited the request (HTTP 429); retry later")
+		return nil, fmt.Errorf("codex rate limited the request (HTTP 429); retry later")
 	case resp.StatusCode >= 500:
-		return nil, fmt.Errorf("Codex server error (HTTP %d)", resp.StatusCode)
+		return nil, fmt.Errorf("codex server error (HTTP %d)", resp.StatusCode)
 	default:
-		return nil, fmt.Errorf("Codex request failed (HTTP %d)", resp.StatusCode)
+		return nil, fmt.Errorf("codex request failed (HTTP %d)", resp.StatusCode)
 	}
 }
 

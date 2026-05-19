@@ -52,7 +52,7 @@ func buildLoginLong(names []string) string {
 	b.WriteString("Open the login page or run the login flow for a provider.\n\n")
 	b.WriteString("Available providers:\n")
 	for _, name := range names {
-		b.WriteString(fmt.Sprintf("  %-12s %s\n", name, providerLoginDescription(name)))
+		fmt.Fprintf(&b, "  %-12s %s\n", name, providerLoginDescription(name))
 	}
 	return b.String()
 }
@@ -62,7 +62,7 @@ func buildFetchLong(names []string) string {
 	b.WriteString("Fetch usage data from a provider.\n\n")
 	b.WriteString("Available providers:\n")
 	for _, name := range names {
-		b.WriteString(fmt.Sprintf("  %s\n", name))
+		fmt.Fprintf(&b, "  %s\n", name)
 	}
 	b.WriteString("\nUse 'all' to fetch from every configured provider.\n")
 	return b.String()

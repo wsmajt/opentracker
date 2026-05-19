@@ -54,7 +54,7 @@ func loadCodexAuth(path string) (authSource, error) {
 		return authSource{}, fmt.Errorf("cannot parse Codex auth file: %w", err)
 	}
 	if auth.Tokens == nil || strings.TrimSpace(auth.Tokens.AccessToken) == "" {
-		return authSource{}, fmt.Errorf("Codex auth file has no access token")
+		return authSource{}, fmt.Errorf("codex auth file has no access token")
 	}
 
 	return authSource{
