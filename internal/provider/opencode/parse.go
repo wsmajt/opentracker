@@ -12,17 +12,24 @@ import (
 // It uses a two-phase approach: first parses HTML structure, then
 // looks for embedded JS with exact resetInSec values.
 func ParseHTML(html string) (GoUsage, error) {
+	// First try to extract exact resetInSec from embedded JS. Keep the
+	// original HTML because the app embeds usage data inside script tags.
+	jsData := extractJSEmbeddedData(html)
+
 	// Remove HTML comments
 	html = regexp.MustCompile(`<!--.*?-->`).ReplaceAllString(html, "")
 
 	// Phase 1: Parse HTML structure
 	usage, err := parseHTMLStructure(html)
 	if err != nil {
+		if jsData != nil {
+			usage = usageFromJSEmbeddedData(jsData)
+			return usage, nil
+		}
 		return GoUsage{}, err
 	}
 
 	// Phase 2: Try to extract exact resetInSec from embedded JS
-	jsData := extractJSEmbeddedData(html)
 	if jsData != nil {
 		applyJSEmbeddedData(usage, jsData)
 	}
@@ -31,7 +38,7 @@ func ParseHTML(html string) (GoUsage, error) {
 }
 
 func parseHTMLStructure(html string) (GoUsage, error) {
-	parts := regexp.MustCompile(`<div\s+data-slot="usage-item"[^>]*>`).Split(html, -1)
+	parts := regexp.MustCompile(`<div\b[^>]*\bdata-slot="usage-item"[^>]*>`).Split(html, -1)
 	if len(parts) < 2 {
 		return GoUsage{}, fmt.Errorf("no usage items found")
 	}
@@ -39,15 +46,15 @@ func parseHTMLStructure(html string) (GoUsage, error) {
 	var entries = make(map[string]*UsageWindow)
 
 	for _, part := range parts[1:] {
-		endIdx := strings.Index(part, `<div data-slot="usage-item"`)
-		if endIdx != -1 {
-			part = part[:endIdx]
+		endIdx := regexp.MustCompile(`<div\b[^>]*\bdata-slot="usage-item"[^>]*>`).FindStringIndex(part)
+		if endIdx != nil {
+			part = part[:endIdx[0]]
 		}
 
-		labelMatch := regexp.MustCompile(`<span\s+data-slot="usage-label"[^>]*>(.*?)</span>`).FindStringSubmatch(part)
-		progressMatch := regexp.MustCompile(`<div\s+data-slot="progress-bar"[^>]*style="width:\s*(\d+)%?"[^>]*>`).FindStringSubmatch(part)
-		valueMatch := regexp.MustCompile(`<span\s+data-slot="usage-value"[^>]*>(.*?)</span>`).FindStringSubmatch(part)
-		resetMatch := regexp.MustCompile(`<span\s+data-slot="reset-time"[^>]*>(.*?)</span>`).FindStringSubmatch(part)
+		labelMatch := regexp.MustCompile(`<span\b[^>]*\bdata-slot="usage-label"[^>]*>(.*?)</span>`).FindStringSubmatch(part)
+		progressMatch := regexp.MustCompile(`<div\b[^>]*\bdata-slot="progress-bar"[^>]*\bstyle="width:\s*(\d+)%?"[^>]*>`).FindStringSubmatch(part)
+		valueMatch := regexp.MustCompile(`<span\b[^>]*\bdata-slot="usage-value"[^>]*>(.*?)</span>`).FindStringSubmatch(part)
+		resetMatch := regexp.MustCompile(`<span\b[^>]*\bdata-slot="reset-time"[^>]*>(.*?)</span>`).FindStringSubmatch(part)
 
 		if labelMatch == nil {
 			continue
@@ -113,6 +120,28 @@ func parseHTMLStructure(html string) (GoUsage, error) {
 	return usage, nil
 }
 
+func usageFromJSEmbeddedData(data []*jsWindowData) GoUsage {
+	usage := GoUsage{}
+	if len(data) > 0 {
+		usage.Rolling = usageWindowFromJS(data[0])
+	}
+	if len(data) > 1 {
+		usage.Weekly = usageWindowFromJS(data[1])
+	}
+	if len(data) > 2 {
+		usage.Monthly = usageWindowFromJS(data[2])
+	}
+	return usage
+}
+
+func usageWindowFromJS(data *jsWindowData) *UsageWindow {
+	return &UsageWindow{
+		UsedPercent:   data.usagePercent,
+		WindowMinutes: data.resetInSec / 60,
+		ResetsAt:      time.Now().UTC().Add(time.Duration(data.resetInSec) * time.Second).Format(time.RFC3339),
+	}
+}
+
 // jsWindowData holds exact values extracted from embedded JS.
 type jsWindowData struct {
 	usagePercent int
@@ -169,7 +198,7 @@ func parseResetTime(text string) (string, int) {
 	hours := 0
 	minutes := 0
 
-	if m := regexp.MustCompile(`(\d+)\s+dni`).FindStringSubmatch(text); m != nil {
+	if m := regexp.MustCompile(`(\d+)\s+(?:dni|dzień)`).FindStringSubmatch(text); m != nil {
 		days, _ = strconv.Atoi(m[1])
 	}
 	if m := regexp.MustCompile(`(\d+)\s+godzin`).FindStringSubmatch(text); m != nil {
