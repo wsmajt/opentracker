@@ -19,6 +19,17 @@ const sampleNewHTMLWithJS = `<script>self.$R=self.$R||[];($R[28]=(r,d)=>{r.s(d),
 
 const sampleNewJSOnly = `<script>rollingUsage:$R[34]={status:"ok",resetInSec:18000,usagePercent:0},weeklyUsage:$R[35]={status:"ok",resetInSec:302548,usagePercent:37},monthlyUsage:$R[36]={status:"ok",resetInSec:112881,usagePercent:65}</script>`
 
+// sampleRateLimitedHTMLWithJS mirrors the real page when the weekly window is
+// exhausted: weeklyUsage is reported with status:"rate-limited" instead of
+// status:"ok". The parser must still pick it up, otherwise the monthly entry
+// shifts into the weekly slot.
+const sampleRateLimitedHTMLWithJS = `<script>self.$R=self.$R||[];($R[28]=(r,d)=>{r.s(d),r.p.s=1,r.p.v=d})($R[18],$R[31]={mine:!0,useBalance:!1,allowTraining:!1,region:$R[32]=["us","eu","sg","cn"],rollingUsage:$R[33]={status:"ok",resetInSec:8066,usagePercent:80},weeklyUsage:$R[34]={status:"rate-limited",resetInSec:357468,usagePercent:100},monthlyUsage:$R[35]={status:"ok",resetInSec:2558605,usagePercent:50}});</script>
+<div data-slot="usage">
+<div data-slot="usage-item"><div data-slot="usage-header"><span data-slot="usage-label">Użycie kroczące</span><span data-slot="usage-value"><!--$-->80<!--/-->%</span></div><div data-slot="progress"><div data-slot="progress-bar" style="width:80%"></div></div><span data-slot="reset-time"><!--$-->Resetuje się za<!--/--> <!--$-->2 godzin(y) 15 minut(y)<!--/--></span></div>
+<div data-slot="usage-item"><div data-slot="usage-header"><span data-slot="usage-label">Użycie tygodniowe</span><span data-slot="usage-value"><!--$-->100<!--/-->%</span></div><div data-slot="progress"><div data-slot="progress-bar" style="width:100%"></div></div><span data-slot="reset-time"><!--$-->Resetuje się za<!--/--> <!--$-->4 dni 3 godzin(y)<!--/--></span></div>
+<div data-slot="usage-item"><div data-slot="usage-header"><span data-slot="usage-label">Użycie miesięczne</span><span data-slot="usage-value"><!--$-->50<!--/-->%</span></div><div data-slot="progress"><div data-slot="progress-bar" style="width:50%"></div></div><span data-slot="reset-time"><!--$-->Resetuje się za<!--/--> <!--$-->29 dni 14 godzin(y)<!--/--></span></div>
+</div>`
+
 func TestParseHTML_Sample(t *testing.T) {
 	usage, err := ParseHTML(sampleHTML)
 	if err != nil {
@@ -155,6 +166,29 @@ func TestParseHTML_NewOpenCodeJSFallback(t *testing.T) {
 	}
 	if usage.Monthly.UsedPercent != 65 || usage.Monthly.WindowMinutes != 1881 {
 		t.Errorf("monthly = %+v, want 65%% and 1881 minutes", usage.Monthly)
+	}
+}
+
+func TestParseHTML_RateLimitedWeekly(t *testing.T) {
+	usage, err := ParseHTML(sampleRateLimitedHTMLWithJS)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if usage.Rolling == nil || usage.Weekly == nil || usage.Monthly == nil {
+		t.Fatalf("expected all usage entries, got %#v", usage)
+	}
+	// Rolling: 80%, resetInSec 8066 -> 134 min
+	if usage.Rolling.UsedPercent != 80 || usage.Rolling.WindowMinutes != 134 {
+		t.Errorf("rolling = %+v, want 80%% and 134 minutes", usage.Rolling)
+	}
+	// Weekly: 100% with status:"rate-limited", resetInSec 357468 -> 5957 min
+	if usage.Weekly.UsedPercent != 100 || usage.Weekly.WindowMinutes != 5957 {
+		t.Errorf("weekly = %+v, want 100%% and 5957 minutes", usage.Weekly)
+	}
+	// Monthly: 50%, resetInSec 2558605 -> 42643 min
+	if usage.Monthly.UsedPercent != 50 || usage.Monthly.WindowMinutes != 42643 {
+		t.Errorf("monthly = %+v, want 50%% and 42643 minutes", usage.Monthly)
 	}
 }
 

@@ -150,8 +150,10 @@ type jsWindowData struct {
 
 // extractJSEmbeddedData looks for SolidJS embedded data like:
 // $R[30]={status:"ok",resetInSec:13642,usagePercent:14}
+// The status field is intentionally not restricted to "ok": a window at
+// 100% usage is reported as status:"rate-limited" and must still be parsed.
 func extractJSEmbeddedData(html string) []*jsWindowData {
-	pattern := regexp.MustCompile(`\$R\[\d+\]=\{[^}]*status:"ok",resetInSec:(\d+),usagePercent:(\d+)[^}]*\}`)
+	pattern := regexp.MustCompile(`\$R\[\d+\]=\{[^}]*status:"[^"]*",resetInSec:(\d+),usagePercent:(\d+)[^}]*\}`)
 	matches := pattern.FindAllStringSubmatch(html, -1)
 
 	var result []*jsWindowData
