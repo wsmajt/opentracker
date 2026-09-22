@@ -36,7 +36,7 @@ var loginCmd = &cobra.Command{
 		case "codex":
 			return loginCodex()
 		case "opencode":
-			url = "https://opencode.ai/go"
+			url = "https://opencode.ai/console/login"
 		default:
 			return fmt.Errorf("unknown provider: %s", provider)
 		}

@@ -78,7 +78,7 @@ opentracker login codex
 opentracker login opencode --verbose
 ```
 
-**OpenCode** will open `https://opencode.ai/go` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies, then detect and save your workspace ID.
+**OpenCode** will open `https://opencode.ai/console/login` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies, then detect and save your workspace ID.
 
 **Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
 
