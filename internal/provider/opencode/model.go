@@ -19,3 +19,20 @@ type GoUsage struct {
 	Weekly  *UsageWindow `json:"weekly,omitempty"`
 	Monthly *UsageWindow `json:"monthly,omitempty"`
 }
+
+// ZenBilling represents OpenCode Zen (pay-as-you-go) billing data returned by
+// the console billing API. Micro-cent amounts (1 USD = 1e8 micro-cents) are
+// preserved as raw strings and also exposed as dollars, matching the console UI.
+type ZenBilling struct {
+	BillingMode           string   `json:"billingMode"`
+	Mode                  string   `json:"mode"`
+	BalanceMicroCents     string   `json:"balanceMicroCents"`
+	BalanceDollars        float64  `json:"balanceDollars"`
+	CreditLimitMicroCents *string  `json:"creditLimitMicroCents"`
+	CreditLimitDollars    *float64 `json:"creditLimitDollars,omitempty"`
+	AvailableMicroCents   string   `json:"availableMicroCents"`
+	AvailableDollars      float64  `json:"availableDollars"`
+	CanPurchaseCredits    bool     `json:"canPurchaseCredits"`
+	CanEnableAutoRecharge bool     `json:"canEnableAutoRecharge"`
+	CanEnrollInPrepaid    bool     `json:"canEnrollInPrepaid"`
+}

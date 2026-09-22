@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -196,5 +197,210 @@ func TestParseResetTime_PolishSingularDay(t *testing.T) {
 	_, minutes := parseResetTime("1 dzień 7 godzin(y)")
 	if minutes != 1860 {
 		t.Errorf("minutes = %d, want 1860", minutes)
+	}
+}
+
+// goStatusJSON mirrors a real GET /console/api/go/status response (values from
+// a live capture, timestamps parameterized).
+const goStatusJSON = `{
+  "subscriberUserId": "acc_01TEST",
+  "paymentMethodId": "payment_method_01TEST",
+  "renewalCurrency": "usd",
+  "useBalance": false,
+  "cancelAtPeriodEnd": true,
+  "renewalPending": false,
+  "access": {
+    "startsAt": %[1]q,
+    "endsAt": %[2]q,
+    "cancelAtPeriodEnd": true,
+    "meters": {
+      "fiveHour": {"startsAt": %[3]q, "resetsAt": %[4]q, "limitMicroCents": "1200000000", "usedMicroCents": "32890547"},
+      "week": {"startsAt": %[5]q, "resetsAt": %[6]q, "limitMicroCents": "3000000000", "usedMicroCents": "840107742"},
+      "month": {"limitMicroCents": "6000000000", "usedMicroCents": "5627596348"}
+    }
+  }
+}`
+
+func TestParseGoStatusJSON_Meters(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	startsAt := now.Add(-60 * time.Minute)
+	fiveHourResets := now.Add(300 * time.Minute)
+	endsAt := now.Add(21600 * time.Minute)
+	weekStarts := now.Add(-24 * time.Hour)
+	weekResets := now.Add(5040 * time.Minute)
+
+	payload := fmt.Sprintf(goStatusJSON,
+		startsAt.Format(time.RFC3339), endsAt.Format(time.RFC3339),
+		startsAt.Format(time.RFC3339), fiveHourResets.Format(time.RFC3339),
+		weekStarts.Format(time.RFC3339), weekResets.Format(time.RFC3339))
+
+	usage, err := ParseGoStatusJSON(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.Rolling == nil || usage.Weekly == nil || usage.Monthly == nil {
+		t.Fatalf("expected all usage entries, got %#v", usage)
+	}
+
+	// Percents come from used/limit micro-cents (round half up):
+	// 32890547/1200000000 -> 3, 840107742/3000000000 -> 28, 5627596348/6000000000 -> 94.
+	if usage.Rolling.UsedPercent != 3 {
+		t.Errorf("rolling usedPercent = %d, want 3", usage.Rolling.UsedPercent)
+	}
+	if usage.Weekly.UsedPercent != 28 {
+		t.Errorf("weekly usedPercent = %d, want 28", usage.Weekly.UsedPercent)
+	}
+	if usage.Monthly.UsedPercent != 94 {
+		t.Errorf("monthly usedPercent = %d, want 94", usage.Monthly.UsedPercent)
+	}
+
+	// Rolling and weekly reset at their own resetsAt; monthly resets at
+	// access.endsAt (the paid period end).
+	if usage.Rolling.ResetsAt != fiveHourResets.Format(time.RFC3339) {
+		t.Errorf("rolling resetsAt = %q, want %q", usage.Rolling.ResetsAt, fiveHourResets.Format(time.RFC3339))
+	}
+	if usage.Weekly.ResetsAt != weekResets.Format(time.RFC3339) {
+		t.Errorf("weekly resetsAt = %q, want %q", usage.Weekly.ResetsAt, weekResets.Format(time.RFC3339))
+	}
+	if usage.Monthly.ResetsAt != endsAt.Format(time.RFC3339) {
+		t.Errorf("monthly resetsAt = %q, want %q", usage.Monthly.ResetsAt, endsAt.Format(time.RFC3339))
+	}
+
+	// windowMinutes counts minutes until reset (allow 2 minutes of test skew).
+	for _, tc := range []struct {
+		name    string
+		got     int
+		wantMin int
+	}{
+		{"rolling", usage.Rolling.WindowMinutes, 300},
+		{"weekly", usage.Weekly.WindowMinutes, 5040},
+		{"monthly", usage.Monthly.WindowMinutes, 21600},
+	} {
+		if tc.got < tc.wantMin-2 || tc.got > tc.wantMin {
+			t.Errorf("%s windowMinutes = %d, want ~%d", tc.name, tc.got, tc.wantMin)
+		}
+	}
+}
+
+func TestParseGoStatusJSON_MissingAccess(t *testing.T) {
+	if _, err := ParseGoStatusJSON(`{"subscriberUserId":"acc_01TEST","renewalCurrency":"usd"}`); err == nil {
+		t.Fatal("expected error for response without access meters")
+	}
+	if _, err := ParseGoStatusJSON(`{not json`); err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestParseGoStatusJSON_IdleRolling(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	endsAt := now.Add(21600 * time.Minute)
+	weekResets := now.Add(5040 * time.Minute)
+	payload := fmt.Sprintf(`{
+	  "access": {
+	    "endsAt": %[1]q,
+	    "meters": {
+	      "fiveHour": {"limitMicroCents": "0", "usedMicroCents": "0"},
+	      "week": {"startsAt": %[2]q, "resetsAt": %[3]q, "limitMicroCents": "3000000000", "usedMicroCents": "0"},
+	      "month": {"limitMicroCents": "6000000000", "usedMicroCents": "0"}
+	    }
+	  }
+	}`, endsAt.Format(time.RFC3339), now.Format(time.RFC3339), weekResets.Format(time.RFC3339))
+
+	usage, err := ParseGoStatusJSON(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.Rolling == nil {
+		t.Fatal("expected rolling entry")
+	}
+	if usage.Rolling.UsedPercent != 0 {
+		t.Errorf("rolling usedPercent = %d, want 0 (zero limit)", usage.Rolling.UsedPercent)
+	}
+	if usage.Rolling.ResetsAt != "" || usage.Rolling.WindowMinutes != 0 {
+		t.Errorf("idle rolling = %+v, want empty resetsAt and 0 minutes", usage.Rolling)
+	}
+}
+
+func TestParseGoStatusJSON_NumericMicroCents(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	resetsAt := now.Add(300 * time.Minute)
+	payload := fmt.Sprintf(`{"access":{"endsAt":%[1]q,"meters":{"fiveHour":{"resetsAt":%[2]q,"limitMicroCents":1200000000,"usedMicroCents":32890547},"week":{"startsAt":%[1]q,"resetsAt":%[1]q,"limitMicroCents":3000000000,"usedMicroCents":0},"month":{"limitMicroCents":6000000000,"usedMicroCents":0}}}}`,
+		resetsAt.Format(time.RFC3339), resetsAt.Format(time.RFC3339))
+
+	usage, err := ParseGoStatusJSON(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if usage.Rolling.UsedPercent != 3 {
+		t.Errorf("rolling usedPercent = %d, want 3", usage.Rolling.UsedPercent)
+	}
+}
+
+func TestUsedPercentOf_RoundHalfUp(t *testing.T) {
+	for _, tc := range []struct {
+		used, limit string
+		want        int
+	}{
+		{"505", "1000", 51},
+		{"504", "1000", 50},
+		{"0", "0", 0},
+		{"100", "0", 0},
+		{"1000", "1000", 100},
+	} {
+		got := usedPercentOf(microCents{raw: tc.used}, microCents{raw: tc.limit})
+		if got != tc.want {
+			t.Errorf("usedPercentOf(%s, %s) = %d, want %d", tc.used, tc.limit, got, tc.want)
+		}
+	}
+}
+
+func TestParseZenBillingJSON(t *testing.T) {
+	payload := `{
+	  "billingMode": "prepaid",
+	  "mode": "pay-as-you-go",
+	  "balanceMicroCents": "250000000",
+	  "creditLimitMicroCents": null,
+	  "availableMicroCents": "250000000",
+	  "canPurchaseCredits": true,
+	  "canEnableAutoRecharge": true,
+	  "canEnrollInPrepaid": false
+	}`
+	billing, err := ParseZenBillingJSON(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if billing.BillingMode != "prepaid" || billing.Mode != "pay-as-you-go" {
+		t.Errorf("billing = %q/%q, want prepaid/pay-as-you-go", billing.BillingMode, billing.Mode)
+	}
+	if billing.BalanceMicroCents != "250000000" || billing.BalanceDollars != 2.5 {
+		t.Errorf("balance = %q/%v, want 250000000 / 2.5", billing.BalanceMicroCents, billing.BalanceDollars)
+	}
+	if billing.AvailableDollars != 2.5 {
+		t.Errorf("availableDollars = %v, want 2.5", billing.AvailableDollars)
+	}
+	if billing.CreditLimitMicroCents != nil || billing.CreditLimitDollars != nil {
+		t.Errorf("creditLimit = %v/%v, want nil/nil", billing.CreditLimitMicroCents, billing.CreditLimitDollars)
+	}
+	if !billing.CanPurchaseCredits || !billing.CanEnableAutoRecharge || billing.CanEnrollInPrepaid {
+		t.Errorf("unexpected capability flags: %+v", billing)
+	}
+
+	withLimit := `{"billingMode":"credit","mode":"subscription","balanceMicroCents":"0","creditLimitMicroCents":"50000000000","availableMicroCents":"49000000000"}`
+	billing, err = ParseZenBillingJSON(withLimit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if billing.CreditLimitMicroCents == nil || *billing.CreditLimitMicroCents != "50000000000" {
+		t.Errorf("creditLimitMicroCents = %v, want 50000000000", billing.CreditLimitMicroCents)
+	}
+	if billing.CreditLimitDollars == nil || *billing.CreditLimitDollars != 500 {
+		t.Errorf("creditLimitDollars = %v, want 500", billing.CreditLimitDollars)
+	}
+
+	if _, err := ParseZenBillingJSON(`{}`); err == nil {
+		t.Fatal("expected error for empty billing payload")
+	}
+	if _, err := ParseZenBillingJSON(`{oops`); err == nil {
+		t.Fatal("expected error for invalid JSON")
 	}
 }

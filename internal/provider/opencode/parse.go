@@ -1,12 +1,190 @@
 package opencode
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// microCents is a micro-cent amount (1 USD = 1e8 micro-cents) serialized as a
+// JSON string or number.
+type microCents struct {
+	raw string
+}
+
+// UnmarshalJSON accepts both quoted and unquoted amounts.
+func (m *microCents) UnmarshalJSON(data []byte) error {
+	text := strings.TrimSpace(string(data))
+	if text == "null" {
+		m.raw = ""
+		return nil
+	}
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		m.raw = asString
+		return nil
+	}
+	var asNumber json.Number
+	if err := json.Unmarshal(data, &asNumber); err == nil {
+		m.raw = asNumber.String()
+		return nil
+	}
+	return fmt.Errorf("invalid micro-cents amount %s", text)
+}
+
+// bigInt returns the parsed amount or zero when missing or invalid.
+func (m microCents) bigInt() *big.Int {
+	n := new(big.Int)
+	if m.raw == "" {
+		return n
+	}
+	if _, ok := n.SetString(m.raw, 10); !ok {
+		return new(big.Int)
+	}
+	return n
+}
+
+// dollarsFromMicroCents converts micro-cents to dollars rounded to whole cents.
+func dollarsFromMicroCents(m microCents) float64 {
+	value := new(big.Rat).SetInt(m.bigInt())
+	value.Quo(value, big.NewRat(100_000_000, 1))
+	dollars, _ := value.Float64()
+	return math.Round(dollars*100) / 100
+}
+
+// usedPercentOf converts used/limit micro-cents into a percent, mirroring the
+// console UI (round half up).
+func usedPercentOf(used, limit microCents) int {
+	l := limit.bigInt()
+	if l.Sign() <= 0 {
+		return 0
+	}
+	num := new(big.Int).Mul(used.bigInt(), big.NewInt(200))
+	num.Add(num, l)
+	den := new(big.Int).Mul(l, big.NewInt(2))
+	percent := new(big.Int).Div(num, den)
+	max := big.NewInt(1_000_000)
+	if percent.Cmp(max) > 0 {
+		return int(max.Int64())
+	}
+	return int(percent.Int64())
+}
+
+// windowUntil formats a reset timestamp and the remaining minutes until reset
+// (0 when the timestamp is absent or already past).
+func windowUntil(resetsAt *time.Time) (string, int) {
+	if resetsAt == nil {
+		return "", 0
+	}
+	remaining := time.Until(*resetsAt)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return resetsAt.UTC().Format(time.RFC3339), int(remaining / time.Minute)
+}
+
+// goStatusResponse mirrors the console Go status API payload
+// (GET /console/api/go/status).
+type goStatusResponse struct {
+	Access *goAccessJSON `json:"access"`
+}
+
+type goAccessJSON struct {
+	StartsAt *time.Time   `json:"startsAt"`
+	EndsAt   *time.Time   `json:"endsAt"`
+	Meters   goMetersJSON `json:"meters"`
+}
+
+type goMetersJSON struct {
+	FiveHour goMeterJSON `json:"fiveHour"`
+	Week     goMeterJSON `json:"week"`
+	Month    goMeterJSON `json:"month"`
+}
+
+type goMeterJSON struct {
+	StartsAt        *time.Time `json:"startsAt"`
+	ResetsAt        *time.Time `json:"resetsAt"`
+	LimitMicroCents microCents `json:"limitMicroCents"`
+	UsedMicroCents  microCents `json:"usedMicroCents"`
+}
+
+// ParseGoStatusJSON extracts usage data from the console Go status API payload.
+// Rolling and weekly windows reset at their own resetsAt timestamps; the monthly
+// window resets at the end of the paid period (access.endsAt), matching the
+// console UI.
+func ParseGoStatusJSON(payload string) (GoUsage, error) {
+	var status goStatusResponse
+	if err := json.Unmarshal([]byte(payload), &status); err != nil {
+		return GoUsage{}, fmt.Errorf("invalid go status JSON: %w", err)
+	}
+	if status.Access == nil {
+		return GoUsage{}, fmt.Errorf("no usage meters found in go status response")
+	}
+	meters := status.Access.Meters
+	return GoUsage{
+		Rolling: usageWindowFromMeter(meters.FiveHour, meters.FiveHour.ResetsAt),
+		Weekly:  usageWindowFromMeter(meters.Week, meters.Week.ResetsAt),
+		Monthly: usageWindowFromMeter(meters.Month, status.Access.EndsAt),
+	}, nil
+}
+
+func usageWindowFromMeter(meter goMeterJSON, resetsAt *time.Time) *UsageWindow {
+	resets, minutes := windowUntil(resetsAt)
+	return &UsageWindow{
+		UsedPercent:   usedPercentOf(meter.UsedMicroCents, meter.LimitMicroCents),
+		ResetsAt:      resets,
+		WindowMinutes: minutes,
+	}
+}
+
+// billingStatusResponse mirrors the console billing status API payload
+// (GET /console/api/billing/status).
+type billingStatusResponse struct {
+	BillingMode           string      `json:"billingMode"`
+	Mode                  string      `json:"mode"`
+	BalanceMicroCents     microCents  `json:"balanceMicroCents"`
+	CreditLimitMicroCents *microCents `json:"creditLimitMicroCents"`
+	AvailableMicroCents   microCents  `json:"availableMicroCents"`
+	CanPurchaseCredits    bool        `json:"canPurchaseCredits"`
+	CanEnableAutoRecharge bool        `json:"canEnableAutoRecharge"`
+	CanEnrollInPrepaid    bool        `json:"canEnrollInPrepaid"`
+}
+
+// ParseZenBillingJSON extracts billing data from the console billing status
+// API payload.
+func ParseZenBillingJSON(payload string) (ZenBilling, error) {
+	var status billingStatusResponse
+	if err := json.Unmarshal([]byte(payload), &status); err != nil {
+		return ZenBilling{}, fmt.Errorf("invalid billing status JSON: %w", err)
+	}
+	if status.BillingMode == "" && status.Mode == "" {
+		return ZenBilling{}, fmt.Errorf("no billing data found in billing status response")
+	}
+
+	result := ZenBilling{
+		BillingMode:           status.BillingMode,
+		Mode:                  status.Mode,
+		BalanceMicroCents:     status.BalanceMicroCents.raw,
+		BalanceDollars:        dollarsFromMicroCents(status.BalanceMicroCents),
+		AvailableMicroCents:   status.AvailableMicroCents.raw,
+		AvailableDollars:      dollarsFromMicroCents(status.AvailableMicroCents),
+		CanPurchaseCredits:    status.CanPurchaseCredits,
+		CanEnableAutoRecharge: status.CanEnableAutoRecharge,
+		CanEnrollInPrepaid:    status.CanEnrollInPrepaid,
+	}
+	if status.CreditLimitMicroCents != nil {
+		raw := status.CreditLimitMicroCents.raw
+		dollars := dollarsFromMicroCents(*status.CreditLimitMicroCents)
+		result.CreditLimitMicroCents = &raw
+		result.CreditLimitDollars = &dollars
+	}
+	return result, nil
+}
 
 // ParseHTML extracts usage data from OpenCode Go HTML.
 // It uses a two-phase approach: first parses HTML structure, then

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"opentracker/internal/config"
 	"opentracker/internal/fetcher"
@@ -67,48 +69,109 @@ func (o *OpenCodeProvider) Name() string {
 	return "opencode-" + o.plan
 }
 
-// Fetch downloads the HTML page or API data with usage data.
+// Fetch downloads the usage payload from the OpenCode console API.
+// The console is a client-side SPA since the site redesign, so the data is
+// read from the same JSON API the console itself uses (session cookies plus
+// the x-org-id workspace header).
 func (o *OpenCodeProvider) Fetch(ctx context.Context) (string, error) {
-	url := fmt.Sprintf("https://opencode.ai/workspace/%s/%s", o.cfg.Workspace, o.plan)
-
+	url := o.apiURL()
 	headers := map[string]string{
 		"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0",
-		"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Accept":     "application/json",
+		"x-org-id":   o.cfg.Workspace,
 	}
 
-	resp, err := o.fetcher.Get(ctx, url, headers)
-	if err != nil {
-		return "", fmt.Errorf("fetch failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	const maxAttempts = 3
+	backoff := 500 * time.Millisecond
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	statusCode := 0
+	var body []byte
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		code, data, err := o.get(ctx, url, headers)
+		if err != nil {
+			return "", fmt.Errorf("fetch failed: %w", err)
+		}
+		statusCode, body = code, data
+
+		if statusCode == http.StatusOK || !isRetryableStatus(statusCode) || attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 3
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("cannot read body: %w", err)
+	if statusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", statusCode)
 	}
 
-	html := string(body)
-	if !isValidResponse(html) {
+	payload := string(body)
+	if !isValidResponse(payload) {
 		return "", fmt.Errorf("session expired or no usage data found; run 'opentracker login %s'", o.Name())
 	}
 
-	return html, nil
+	return payload, nil
 }
 
-func isValidResponse(html string) bool {
-	return len(html) > 0 && (containsAny(html, []string{
-		`data-slot="usage-item"`,
+func (o *OpenCodeProvider) get(ctx context.Context, url string, headers map[string]string) (int, []byte, error) {
+	resp, err := o.fetcher.Get(ctx, url, headers)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("cannot read body: %w", err)
+	}
+	return resp.StatusCode, body, nil
+}
+
+// apiURL returns the console API endpoint with usage data for the plan.
+func (o *OpenCodeProvider) apiURL() string {
+	if o.plan == "zen" {
+		return "https://opencode.ai/console/api/billing/status"
+	}
+	return "https://opencode.ai/console/api/go/status"
+}
+
+func isRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidResponse(payload string) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	if containsAny(payload, []string{
+		`"meters"`,
+		`usedMicroCents`,
+		`balanceMicroCents`,
+		`billingMode`,
 		`rollingUsage`,
 		`weeklyUsage`,
 		`usagePercent`,
-	}) || containsAny(html, []string{
-		"id:",
-		"wrk_",
-	}))
+	}) {
+		return true
+	}
+	// Legacy server-rendered page markers.
+	if containsAny(payload, []string{
+		`data-slot="usage-item"`,
+	}) {
+		return true
+	}
+	return containsAny(payload, []string{"id:", "wrk_"})
 }
 
 func containsAny(s string, substrs []string) bool {
@@ -133,7 +196,14 @@ func findSubstr(s, substr string) bool {
 	return false
 }
 
-// Parse extracts usage data from HTML.
-func (o *OpenCodeProvider) Parse(html string) (interface{}, error) {
-	return ParseHTML(html)
+// Parse extracts usage data from the fetched payload. The console API returns
+// JSON; legacy server-rendered HTML pages are still handled as a fallback.
+func (o *OpenCodeProvider) Parse(payload string) (interface{}, error) {
+	if strings.HasPrefix(strings.TrimSpace(payload), "{") {
+		if o.plan == "zen" {
+			return ParseZenBillingJSON(payload)
+		}
+		return ParseGoStatusJSON(payload)
+	}
+	return ParseHTML(payload)
 }
