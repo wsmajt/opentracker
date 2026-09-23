@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"opentracker/internal/browsercookies"
 	"opentracker/internal/config"
 	"opentracker/internal/fetcher"
 	"opentracker/internal/provider"
@@ -50,6 +51,9 @@ func NewProvider(appCfg *config.Config, plan string) (provider.Provider, error) 
 
 	home, _ := os.UserHomeDir()
 	cookieFile := filepath.Join(home, ".config", "opentracker", "opencode-cookies.txt")
+	if err := browsercookies.SecureOpenCodeCookieFile(cookieFile); err != nil {
+		return nil, fmt.Errorf("cannot secure OpenCode cookies: %w", err)
+	}
 
 	f, err := fetcher.New(cookieFile)
 	if err != nil {

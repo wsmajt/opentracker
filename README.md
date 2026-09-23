@@ -78,7 +78,9 @@ opentracker login codex
 opentracker login opencode --verbose
 ```
 
-**OpenCode** will open `https://opencode.ai/console/login` in your browser. After logging in, press **Enter** and OpenTracker will automatically find and save your session cookies, then detect and save your workspace ID.
+**OpenCode** will open `https://opencode.ai/console/login` in your browser. After logging in, press **Enter** and OpenTracker will verify the imported session, replace the saved cookies and workspace ID, and clear cached OpenCode usage. If workspace detection fails and you skip the manual ID prompt, the existing account is left unchanged.
+
+Cookies are stored as an unencrypted Netscape file at `~/.config/opentracker/opencode-cookies.txt`. OpenTracker restricts the file to the current user (`0600`) and its directory to `0700`, including when upgrading an older installation. Protect your account and home-directory backups accordingly.
 
 **Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
 

@@ -5,51 +5,48 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"time"
 
+	"opentracker/internal/browsercookies"
 	"opentracker/internal/fetcher"
 )
 
-const (
-	workspacesServerID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
-	workspaceCacheFile = "opencode-workspace.txt"
-)
+const workspacesServerID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
 
-// DetectWorkspaceID tries to find the workspace ID via the OpenCode API.
-// It first checks the cache file, then calls the workspaces endpoint.
+// DetectWorkspaceID resolves the workspace from the current cookie file.
+// Never trust the legacy opencode-workspace.txt cache: it belongs to a prior login.
 func DetectWorkspaceID(cookieFile string) (string, error) {
-	// 1. Check cache
-	home, err := os.UserHomeDir()
-	if err == nil {
-		cachePath := filepath.Join(home, ".config", "opentracker", workspaceCacheFile)
-		if data, err := os.ReadFile(cachePath); err == nil {
-			id := string(data)
-			if isValidWorkspaceID(id) {
-				return id, nil
-			}
-		}
+	if err := browsercookies.SecureOpenCodeCookieFile(cookieFile); err != nil {
+		return "", err
 	}
-
-	// 2. Load cookies
 	f, err := fetcher.New(cookieFile)
 	if err != nil {
 		return "", fmt.Errorf("cannot create fetcher: %w", err)
 	}
+	return detectWorkspaceID(f.CookieHeader("opencode.ai"),
+		"https://opencode.ai/_server?id="+workspacesServerID,
+		&http.Client{Timeout: 15 * time.Second})
+}
 
-	cookieHeader := f.CookieHeader("opencode.ai")
+// DetectWorkspaceIDFromCookies verifies a freshly imported browser session
+// before replacing the cookies and workspace belonging to the previous login.
+func DetectWorkspaceIDFromCookies(cookies []*http.Cookie) (string, error) {
+	f := fetcher.FromCookies(cookies)
+	return detectWorkspaceID(f.CookieHeader("opencode.ai"),
+		"https://opencode.ai/_server?id="+workspacesServerID,
+		&http.Client{Timeout: 15 * time.Second})
+}
+
+func detectWorkspaceID(cookieHeader, endpoint string, client *http.Client) (string, error) {
 	if cookieHeader == "" {
 		return "", fmt.Errorf("no cookies found for opencode.ai; run 'opentracker login opencode'")
 	}
 
-	// 3. Call API endpoint
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	url := "https://opencode.ai/_server?id=" + workspacesServerID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", fmt.Errorf("cannot create request: %w", err)
 	}
@@ -62,7 +59,6 @@ func DetectWorkspaceID(cookieFile string) (string, error) {
 	req.Header.Set("Referer", "https://opencode.ai")
 	req.Header.Set("Accept", "text/javascript, application/json;q=0.9, */*;q=0.8")
 
-	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("API request failed: %w", err)
@@ -83,18 +79,9 @@ func DetectWorkspaceID(cookieFile string) (string, error) {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// 4. Extract workspace ID
 	id := extractWorkspaceID(text)
 	if id == "" {
 		return "", fmt.Errorf("no workspace ID found in API response")
-	}
-
-	// 5. Save to cache
-	if home != "" {
-		dir := filepath.Join(home, ".config", "opentracker")
-		_ = os.MkdirAll(dir, 0o755)
-		cachePath := filepath.Join(dir, workspaceCacheFile)
-		_ = os.WriteFile(cachePath, []byte(id), 0o644)
 	}
 
 	return id, nil

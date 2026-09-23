@@ -23,10 +23,15 @@ func New(cookieFile string) (*Fetcher, error) {
 		return nil, err
 	}
 
+	return FromCookies(cookies), nil
+}
+
+// FromCookies creates a fetcher without persisting imported browser cookies.
+func FromCookies(cookies []*http.Cookie) *Fetcher {
 	return &Fetcher{
 		client:  &http.Client{Timeout: 30 * time.Second},
 		cookies: cookies,
-	}, nil
+	}
 }
 
 func (f *Fetcher) Get(ctx context.Context, targetURL string, headers map[string]string) (*http.Response, error) {

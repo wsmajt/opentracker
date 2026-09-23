@@ -88,7 +88,7 @@ func importViaKooky(ctx context.Context, logger func(string)) ([]*http.Cookie, s
 			}
 
 			cookies = append(cookies, &cookie.Cookie)
-			if cookie.Name == "auth" || cookie.Name == "__Host-auth" {
+			if isOpenCodeSessionCookie(cookie.Name) {
 				hasAuth = true
 			}
 		}
@@ -209,7 +209,7 @@ func readFirefoxStore(ctx context.Context, path string, logger func(string)) ([]
 		}
 
 		cookies = append(cookies, &cookie.Cookie)
-		if cookie.Name == "auth" || cookie.Name == "__Host-auth" {
+		if isOpenCodeSessionCookie(cookie.Name) {
 			hasAuth = true
 		}
 	}
@@ -217,26 +217,73 @@ func readFirefoxStore(ctx context.Context, path string, logger func(string)) ([]
 	return cookies, hasAuth
 }
 
-// SaveOpenCodeCookies persists cookies to the Netscape cookie file used by opentracker.
+func isOpenCodeSessionCookie(name string) bool {
+	return name == "auth" || name == "__Host-auth" || name == "__Host-console_session"
+}
+
+// SecureOpenCodeCookieFile restricts the config directory and an existing
+// cookie file to the current user. It also upgrades permissions from older
+// OpenTracker releases before the file is read or replaced.
+func SecureOpenCodeCookieFile(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("cannot create cookie directory: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cookie directory %q is not a directory", dir)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("cannot secure cookie directory: %w", err)
+	}
+	info, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("cookie file %q is not a regular file", path)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("cannot secure cookie file: %w", err)
+	}
+	return nil
+}
+
+// SaveOpenCodeCookies atomically persists cookies with owner-only permissions.
 func SaveOpenCodeCookies(cookies []*http.Cookie) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
 	}
 
-	dir := filepath.Join(home, ".config", "opentracker")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("cannot create config directory: %w", err)
+	path := filepath.Join(home, ".config", "opentracker", "opencode-cookies.txt")
+	if err := SecureOpenCodeCookieFile(path); err != nil {
+		return err
 	}
 
-	path := filepath.Join(dir, "opencode-cookies.txt")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, err := os.CreateTemp(filepath.Dir(path), ".opencode-cookies-*")
 	if err != nil {
-		return fmt.Errorf("cannot open cookie file: %w", err)
+		return fmt.Errorf("cannot create temporary cookie file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = os.Remove(f.Name()) }()
 
 	kooky.ExportCookies(context.Background(), f, cookies)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("cannot sync cookie file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("cannot close cookie file: %w", err)
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return fmt.Errorf("cannot replace cookie file: %w", err)
+	}
 	return nil
 }
 
