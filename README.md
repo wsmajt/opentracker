@@ -7,7 +7,7 @@ A lightweight CLI tool for tracking AI provider usage limits. Currently supports
 - **Usage tracking** - Monitor rolling, weekly, and monthly usage percentages
 - **Multiple providers** - OpenCode (Go/Zen plans) and Codex (OpenAI usage via Codex CLI auth)
 - **Multiple plans** - Support for different OpenCode plans (go, zen) sharing the same workspace and cookies
-- **Interactive setup** - Prompts for workspace ID on first use, saves configuration automatically
+- **Verified setup** - Detects the OpenCode workspace from the imported authenticated browser session before saving configuration
 - **Automatic cookie import** - Scans Chrome, Firefox, Zen Browser, and more for session cookies
 - **Clean JSON output** - Pipe-friendly output for integration with other tools
 
@@ -78,9 +78,13 @@ opentracker login codex
 opentracker login opencode --verbose
 ```
 
-**OpenCode** will open `https://opencode.ai/console/login` in your browser. After logging in, press **Enter** and OpenTracker will verify the imported session, replace the saved cookies and workspace ID, and clear cached OpenCode usage. If workspace detection fails and you skip the manual ID prompt, the existing account is left unchanged.
+**OpenCode** will open `https://opencode.ai/console/login` in your browser. Sign in to the correct account and press **Enter** to import cookies. Import requires an authenticated console session cookie. OpenTracker verifies the session against `/console/api/orgs` and requires a validated workspace selection before changing credentials or configuration. If verification, workspace listing, or selection fails, login reports an error and the existing account remains selected; there is no manual workspace-ID override.
 
-Cookies are stored as an unencrypted Netscape file at `~/.config/opentracker/opencode-cookies.txt`. OpenTracker restricts the file to the current user (`0600`) and its directory to `0700`, including when upgrading an older installation. Protect your account and home-directory backups accordingly.
+OpenCode session cookies are stored in the operating system keyring; OpenTracker does not write a plaintext cookie file and does not fall back to one. Login saves a new keyring record, verifies it, and then switches the active workspace/credential selector in the config. A previous keyring entry and any legacy plaintext cookie file are removed only after the new selector and credential have been confirmed. If migration cannot complete, the existing account remains selected and old data is retained. A legacy plaintext cookie file may be removed after a successful login migration; it is never read as a fallback.
+
+The keyring must be available and unlocked when logging in and fetching OpenCode usage. If it is locked or unavailable, unlock or configure your desktop/system keyring and retry; OpenTracker will report an error rather than saving credentials in plaintext. Keyring storage reduces accidental exposure but is not protection from malware or other code running as the same user.
+
+Fetch results are cached for 90 seconds. Use `opentracker fetch opencode-go --force` (or `opencode-zen --force`) to bypass the cache when you need an immediate fresh result. A successful login clears both OpenCode plan caches.
 
 **Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
 

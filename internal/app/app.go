@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -56,7 +57,16 @@ func (a *App) Fetch(ctx context.Context, providerName string, force bool) error 
 }
 
 func (a *App) fetchOne(ctx context.Context, providerName string, force bool, prompt bool) error {
+	return a.fetchOneWithProvider(ctx, providerName, force, prompt, provider.Get)
+}
+
+func (a *App) fetchOneWithProvider(ctx context.Context, providerName string, force bool, prompt bool, getProvider func(string, *config.Config) (provider.Provider, error)) error {
+	isOpenCode := providerName == "opencode-go" || providerName == "opencode-zen"
 	cacheKey := providerName
+
+	if isOpenCode && !a.isConfigured(providerName) {
+		return fmt.Errorf("opencode auth is not configured; run 'opentracker login opencode'")
+	}
 
 	// Ensure provider is configured before reading cache so auth-sensitive providers
 	// do not return data for a stale or different account.
@@ -69,6 +79,23 @@ func (a *App) fetchOne(ctx context.Context, providerName string, force bool, pro
 		}
 	}
 
+	var p provider.Provider
+	if isOpenCode {
+		var err error
+		p, err = getProvider(providerName, a.config)
+		if err != nil {
+			return err
+		}
+
+		// Get may migrate legacy cookies and persist CredentialID. Read the config
+		// only after provider construction so the cache is scoped to the active credential.
+		opencodeConfig, err := opencode.ParseConfig(a.config.Providers["opencode"])
+		if err != nil {
+			return fmt.Errorf("invalid opencode config: %w", err)
+		}
+		cacheKey = OpenCodeCacheKey(providerName, opencodeConfig.Workspace, opencodeConfig.CredentialID)
+	}
+
 	if !force {
 		var cached []model.ProviderResult
 		if a.cache.Get(cacheKey, &cached) {
@@ -76,9 +103,12 @@ func (a *App) fetchOne(ctx context.Context, providerName string, force bool, pro
 		}
 	}
 
-	p, err := provider.Get(providerName, a.config)
-	if err != nil {
-		return err
+	if p == nil {
+		var err error
+		p, err = getProvider(providerName, a.config)
+		if err != nil {
+			return err
+		}
 	}
 
 	html, err := p.Fetch(ctx)
@@ -101,6 +131,12 @@ func (a *App) fetchOne(ctx context.Context, providerName string, force bool, pro
 	}
 
 	return output.Print(results)
+}
+
+// OpenCodeCacheKey returns the account-scoped cache key for an OpenCode plan.
+func OpenCodeCacheKey(providerName, workspace, credentialID string) string {
+	identity, _ := json.Marshal([3]string{providerName, workspace, credentialID})
+	return fmt.Sprintf("opencode-%x", sha256.Sum256(identity))
 }
 
 // isConfigured checks if a provider has valid config.

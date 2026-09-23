@@ -18,7 +18,7 @@ type Fetcher struct {
 }
 
 func New(cookieFile string) (*Fetcher, error) {
-	cookies, err := loadNetscapeCookies(cookieFile)
+	cookies, err := LoadNetscapeCookies(cookieFile)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,8 @@ func (f *Fetcher) Get(ctx context.Context, targetURL string, headers map[string]
 	return resp, nil
 }
 
-func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
+// LoadNetscapeCookies reads cookies from a Netscape-format cookie file.
+func LoadNetscapeCookies(path string) ([]*http.Cookie, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -96,11 +97,17 @@ func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
 		name := fields[5]
 		value := fields[6]
 
-		expFloat, err := strconv.ParseFloat(fields[4], 64)
+		exp, err := strconv.ParseInt(fields[4], 10, 64)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid cookie expiry %q: %w", fields[4], err)
 		}
-		exp := int64(expFloat)
+		expires := time.Unix(exp, 0)
+		if exp >= 1_000_000_000_000 || exp <= -1_000_000_000_000 {
+			expires = time.UnixMilli(exp)
+		}
+		if year := expires.Year(); year < 0 || year > 9999 {
+			return nil, fmt.Errorf("invalid cookie expiry %q: outside supported time range", fields[4])
+		}
 
 		cookies = append(cookies, &http.Cookie{
 			Name:     name,
@@ -108,7 +115,7 @@ func loadNetscapeCookies(path string) ([]*http.Cookie, error) {
 			Domain:   domain,
 			Path:     path,
 			Secure:   secure,
-			Expires:  time.Unix(exp, 0),
+			Expires:  expires,
 			HttpOnly: false,
 		})
 	}

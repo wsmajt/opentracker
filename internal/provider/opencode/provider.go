@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"opentracker/internal/browsercookies"
 	"opentracker/internal/config"
 	"opentracker/internal/fetcher"
 	"opentracker/internal/provider"
@@ -27,14 +24,21 @@ func init() {
 
 // OpenCodeProvider implements provider.Provider for opencode.ai.
 type OpenCodeProvider struct {
-	cfg        *OpenCodeConfig
-	fetcher    *fetcher.Fetcher
-	cookieFile string
-	plan       string
+	cfg     *OpenCodeConfig
+	fetcher *fetcher.Fetcher
+	plan    string
 }
 
 // NewProvider creates a new OpenCode provider for the given plan.
 func NewProvider(appCfg *config.Config, plan string) (provider.Provider, error) {
+	return newProvider(appCfg, plan, NewCredentialStore())
+}
+
+func newProvider(appCfg *config.Config, plan string, store CredentialStore) (provider.Provider, error) {
+	return newProviderWithWorkspaceLister(appCfg, plan, store, ListWorkspaceIDsFromCookies)
+}
+
+func newProviderWithWorkspaceLister(appCfg *config.Config, plan string, store CredentialStore, listWorkspaces func([]*http.Cookie) ([]string, error)) (provider.Provider, error) {
 	raw, ok := appCfg.Providers["opencode"]
 	if !ok {
 		return nil, fmt.Errorf("opencode not configured")
@@ -45,26 +49,28 @@ func NewProvider(appCfg *config.Config, plan string) (provider.Provider, error) 
 		return nil, fmt.Errorf("invalid opencode config: %w", err)
 	}
 
-	if cfg.Workspace == "" {
-		return nil, fmt.Errorf("opencode workspace not set; run 'opentracker login opencode'")
+	var cookies []*http.Cookie
+	if cfg.CredentialID != "" {
+		if cfg.Workspace == "" {
+			return nil, fmt.Errorf("opencode workspace not set; run 'opentracker login opencode'")
+		}
+		cookies, err = LoadCredential(store, cfg.CredentialID, cfg.Workspace)
+		if err != nil {
+			return nil, err
+		}
+		cleanupResidualLegacyCookieFile()
+	} else {
+		cookies, err = migrateLegacyCookies(appCfg, cfg, store, listWorkspaces)
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	home, _ := os.UserHomeDir()
-	cookieFile := filepath.Join(home, ".config", "opentracker", "opencode-cookies.txt")
-	if err := browsercookies.SecureOpenCodeCookieFile(cookieFile); err != nil {
-		return nil, fmt.Errorf("cannot secure OpenCode cookies: %w", err)
-	}
-
-	f, err := fetcher.New(cookieFile)
-	if err != nil {
-		return nil, fmt.Errorf("cannot create fetcher: %w", err)
-	}
+	f := fetcher.FromCookies(cookies)
 
 	return &OpenCodeProvider{
-		cfg:        cfg,
-		fetcher:    f,
-		cookieFile: cookieFile,
-		plan:       plan,
+		cfg:     cfg,
+		fetcher: f,
+		plan:    plan,
 	}, nil
 }
 

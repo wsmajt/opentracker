@@ -4,7 +4,8 @@ import "encoding/json"
 
 // OpenCodeConfig holds provider-specific configuration for OpenCode.
 type OpenCodeConfig struct {
-	Workspace string `json:"workspace"`
+	Workspace    string `json:"workspace"`
+	CredentialID string `json:"credentialId,omitempty"`
 }
 
 // ParseConfig unmarshals the raw JSON config into OpenCodeConfig.

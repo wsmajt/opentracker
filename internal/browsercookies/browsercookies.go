@@ -58,6 +58,8 @@ func importViaKooky(ctx context.Context, logger func(string)) ([]*http.Cookie, s
 		return nil, "", fmt.Errorf("no browser cookie stores found")
 	}
 
+	profiles := make([][]*http.Cookie, 0, len(stores))
+	sources := make([]string, 0, len(stores))
 	for _, store := range stores {
 		defer func() { _ = store.Close() }()
 
@@ -76,7 +78,6 @@ func importViaKooky(ctx context.Context, logger func(string)) ([]*http.Cookie, s
 
 		cookiesSeq := store.TraverseCookies(kooky.Valid, kooky.DomainContains("opencode.ai")).OnlyCookies()
 		var cookies []*http.Cookie
-		hasAuth := false
 
 		for cookie := range cookiesSeq {
 			if cookie == nil {
@@ -88,24 +89,26 @@ func importViaKooky(ctx context.Context, logger func(string)) ([]*http.Cookie, s
 			}
 
 			cookies = append(cookies, &cookie.Cookie)
-			if isOpenCodeSessionCookie(cookie.Name) {
-				hasAuth = true
-			}
 		}
 
 		if len(cookies) > 0 {
 			if logger != nil {
 				logger(fmt.Sprintf("  Found %d cookies for opencode.ai", len(cookies)))
 			}
-			if hasAuth {
-				if logger != nil {
-					logger(fmt.Sprintf("  Found auth cookie in %s", source))
-				}
-				return cookies, source, nil
-			}
-			if logger != nil {
-				logger(fmt.Sprintf("  Skipping %s: missing auth cookie", source))
-			}
+			profiles = append(profiles, cookies)
+			sources = append(sources, source)
+		}
+	}
+
+	if index := firstProfileWithConsoleSession(profiles); index >= 0 {
+		if logger != nil {
+			logger(fmt.Sprintf("  Found __Host-console_session cookie in %s", sources[index]))
+		}
+		return profiles[index], sources[index], nil
+	}
+	if logger != nil {
+		for _, source := range sources {
+			logger(fmt.Sprintf("  Skipping %s: missing nonempty __Host-console_session cookie", source))
 		}
 	}
 
@@ -136,16 +139,16 @@ func importViaZenFallback(ctx context.Context, logger func(string)) ([]*http.Coo
 			logger(fmt.Sprintf("Trying Zen fallback: %s", source))
 		}
 
-		cookies, hasAuth := readFirefoxStore(ctx, path, logger)
-		if len(cookies) > 0 && hasAuth {
+		cookies, hasSession := readFirefoxStore(ctx, path, logger)
+		if len(cookies) > 0 && hasSession {
 			if logger != nil {
-				logger(fmt.Sprintf("Found auth cookie in %s", source))
+				logger(fmt.Sprintf("Found __Host-console_session cookie in %s", source))
 			}
 			return cookies, source, nil
 		}
 		if len(cookies) > 0 {
 			if logger != nil {
-				logger(fmt.Sprintf("Found %d cookies but no auth in %s", len(cookies), source))
+				logger(fmt.Sprintf("Found %d cookies but no nonempty __Host-console_session in %s", len(cookies), source))
 			}
 		}
 	}
@@ -177,16 +180,16 @@ func importViaFirefoxFallback(ctx context.Context, logger func(string)) ([]*http
 			logger(fmt.Sprintf("Trying Firefox fallback: %s", source))
 		}
 
-		cookies, hasAuth := readFirefoxStore(ctx, path, logger)
-		if len(cookies) > 0 && hasAuth {
+		cookies, hasSession := readFirefoxStore(ctx, path, logger)
+		if len(cookies) > 0 && hasSession {
 			if logger != nil {
-				logger(fmt.Sprintf("Found auth cookie in %s", source))
+				logger(fmt.Sprintf("Found __Host-console_session cookie in %s", source))
 			}
 			return cookies, source, nil
 		}
 		if len(cookies) > 0 {
 			if logger != nil {
-				logger(fmt.Sprintf("Found %d cookies but no auth in %s", len(cookies), source))
+				logger(fmt.Sprintf("Found %d cookies but no nonempty __Host-console_session in %s", len(cookies), source))
 			}
 		}
 	}
@@ -197,7 +200,7 @@ func importViaFirefoxFallback(ctx context.Context, logger func(string)) ([]*http
 func readFirefoxStore(ctx context.Context, path string, logger func(string)) ([]*http.Cookie, bool) {
 	cookiesSeq := firefox.TraverseCookies(path, kooky.Valid, kooky.DomainContains("opencode.ai")).OnlyCookies()
 	var cookies []*http.Cookie
-	hasAuth := false
+	hasSession := false
 
 	for cookie := range cookiesSeq {
 		if cookie == nil {
@@ -209,16 +212,27 @@ func readFirefoxStore(ctx context.Context, path string, logger func(string)) ([]
 		}
 
 		cookies = append(cookies, &cookie.Cookie)
-		if isOpenCodeSessionCookie(cookie.Name) {
-			hasAuth = true
+		if isRequiredOpenCodeSessionCookie(&cookie.Cookie) {
+			hasSession = true
 		}
 	}
 
-	return cookies, hasAuth
+	return cookies, hasSession
 }
 
-func isOpenCodeSessionCookie(name string) bool {
-	return name == "auth" || name == "__Host-auth" || name == "__Host-console_session"
+func isRequiredOpenCodeSessionCookie(cookie *http.Cookie) bool {
+	return cookie != nil && cookie.Name == "__Host-console_session" && cookie.Value != "" && domainMatches(cookie.Domain, cookieDomains)
+}
+
+func firstProfileWithConsoleSession(profiles [][]*http.Cookie) int {
+	for i, cookies := range profiles {
+		for _, cookie := range cookies {
+			if isRequiredOpenCodeSessionCookie(cookie) {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // SecureOpenCodeCookieFile restricts the config directory and an existing
@@ -251,38 +265,6 @@ func SecureOpenCodeCookieFile(path string) error {
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("cannot secure cookie file: %w", err)
-	}
-	return nil
-}
-
-// SaveOpenCodeCookies atomically persists cookies with owner-only permissions.
-func SaveOpenCodeCookies(cookies []*http.Cookie) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("cannot determine home directory: %w", err)
-	}
-
-	path := filepath.Join(home, ".config", "opentracker", "opencode-cookies.txt")
-	if err := SecureOpenCodeCookieFile(path); err != nil {
-		return err
-	}
-
-	f, err := os.CreateTemp(filepath.Dir(path), ".opencode-cookies-*")
-	if err != nil {
-		return fmt.Errorf("cannot create temporary cookie file: %w", err)
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-
-	kooky.ExportCookies(context.Background(), f, cookies)
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("cannot sync cookie file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("cannot close cookie file: %w", err)
-	}
-	if err := os.Rename(f.Name(), path); err != nil {
-		return fmt.Errorf("cannot replace cookie file: %w", err)
 	}
 	return nil
 }

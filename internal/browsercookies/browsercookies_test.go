@@ -4,46 +4,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
-
-func TestSaveOpenCodeCookiesPrivateAndReplacesOldSession(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".config", "opentracker")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "opencode-cookies.txt")
-	if err := os.WriteFile(path, []byte("old-session-secret"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cookies := []*http.Cookie{{Name: "__Host-console_session", Value: "new-session-secret", Domain: "opencode.ai", Path: "/", Secure: true}}
-	if err := SaveOpenCodeCookies(cookies); err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range []struct {
-		path string
-		mode os.FileMode
-	}{{dir, 0o700}, {path, 0o600}} {
-		info, err := os.Stat(item.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != item.mode {
-			t.Errorf("%s mode = %o, want %o", item.path, got, item.mode)
-		}
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "new-session-secret") || strings.Contains(string(data), "old-session-secret") {
-		t.Fatal("saved cookies did not replace the old session")
-	}
-}
 
 func TestSecureOpenCodeCookieFileUpgradesExistingPermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "opentracker")
@@ -51,7 +13,7 @@ func TestSecureOpenCodeCookieFileUpgradesExistingPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "opencode-cookies.txt")
-	if err := os.WriteFile(path, []byte("secret"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("legacy data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := SecureOpenCodeCookieFile(path); err != nil {
@@ -90,13 +52,29 @@ func TestSecureOpenCodeCookieFileRejectsSymlink(t *testing.T) {
 	}
 }
 
-func TestIsOpenCodeSessionCookie(t *testing.T) {
-	for _, name := range []string{"auth", "__Host-auth", "__Host-console_session"} {
-		if !isOpenCodeSessionCookie(name) {
-			t.Errorf("%q should count as a session cookie", name)
+func TestIsRequiredOpenCodeSessionCookie(t *testing.T) {
+	for _, cookie := range []*http.Cookie{
+		{Name: "auth", Value: "auth-secret", Domain: "opencode.ai"},
+		{Name: "__Host-auth", Value: "auth-secret", Domain: "opencode.ai"},
+		{Name: "__Host-console_session", Domain: "opencode.ai"},
+		{Name: "__Host-console_session", Value: "secret", Domain: "example.com"},
+		{Name: "oc_locale", Value: "en", Domain: "opencode.ai"},
+	} {
+		if isRequiredOpenCodeSessionCookie(cookie) {
+			t.Errorf("%#v should not count as the required session cookie", cookie)
 		}
 	}
-	if isOpenCodeSessionCookie("oc_locale") {
-		t.Error("locale is not a session cookie")
+	if !isRequiredOpenCodeSessionCookie(&http.Cookie{Name: "__Host-console_session", Value: "secret", Domain: ".opencode.ai"}) {
+		t.Error("nonempty console session cookie scoped to opencode.ai should be accepted")
+	}
+}
+
+func TestFirstProfileWithConsoleSessionSkipsAuthOnlyProfile(t *testing.T) {
+	profiles := [][]*http.Cookie{
+		{{Name: "auth", Value: "auth-secret", Domain: "opencode.ai"}},
+		{{Name: "__Host-console_session", Value: "console-secret", Domain: "opencode.ai"}},
+	}
+	if got := firstProfileWithConsoleSession(profiles); got != 1 {
+		t.Fatalf("firstProfileWithConsoleSession() = %d, want later profile index 1", got)
 	}
 }

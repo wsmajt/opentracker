@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDomainMatches_Exact(t *testing.T) {
@@ -43,7 +44,7 @@ opencode.ai	FALSE	/	TRUE	1893456000	auth	token123
 		t.Fatalf("setup failed: %v", err)
 	}
 
-	cookies, err := loadNetscapeCookies(path)
+	cookies, err := LoadNetscapeCookies(path)
 	if err != nil {
 		t.Fatalf("loadNetscapeCookies failed: %v", err)
 	}
@@ -68,8 +69,46 @@ opencode.ai	FALSE	/	TRUE	1893456000	auth	token123
 	}
 }
 
+func TestLoadNetscapeCookies_ExpiryFormats(t *testing.T) {
+	content := "example.com\tFALSE\t/\tFALSE\t1893456000\tseconds\tvalue\n" +
+		"example.com\tFALSE\t/\tFALSE\t1893456000123\tmilliseconds\tvalue\n"
+	path := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	cookies, err := LoadNetscapeCookies(path)
+	if err != nil {
+		t.Fatalf("loadNetscapeCookies failed: %v", err)
+	}
+	if len(cookies) != 2 {
+		t.Fatalf("expected 2 cookies, got %d", len(cookies))
+	}
+
+	wantSeconds := time.Unix(1893456000, 0)
+	if !cookies[0].Expires.Equal(wantSeconds) {
+		t.Errorf("seconds expiry = %s, want %s", cookies[0].Expires, wantSeconds)
+	}
+	wantMilliseconds := time.UnixMilli(1893456000123)
+	if !cookies[1].Expires.Equal(wantMilliseconds) {
+		t.Errorf("milliseconds expiry = %s, want %s", cookies[1].Expires, wantMilliseconds)
+	}
+}
+
+func TestLoadNetscapeCookies_RejectsOutOfRangeExpiry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cookies.txt")
+	content := "example.com\tFALSE\t/\tFALSE\t9999999999999999999\tbad\tvalue\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	if _, err := LoadNetscapeCookies(path); err == nil {
+		t.Fatal("expected an error for out-of-range expiry")
+	}
+}
+
 func TestLoadNetscapeCookies_MissingFile(t *testing.T) {
-	cookies, err := loadNetscapeCookies("/nonexistent/path/cookies.txt")
+	cookies, err := LoadNetscapeCookies("/nonexistent/path/cookies.txt")
 	if err != nil {
 		t.Fatalf("expected no error for missing file, got: %v", err)
 	}

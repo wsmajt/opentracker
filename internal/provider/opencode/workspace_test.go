@@ -1,109 +1,124 @@
 package opencode
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
-	"time"
-
-	"opentracker/internal/fetcher"
 )
 
-func TestDetectWorkspaceIDFromCurrentCookiesIgnoresLegacyCache(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".config", "opentracker")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "opencode-workspace.txt"), []byte("wrk_old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Server-Id") != workspacesServerID {
-			t.Error("missing workspace server ID")
-		}
-		session, err := r.Cookie("__Host-console_session")
-		if err != nil {
-			http.Error(w, "no session", http.StatusUnauthorized)
-			return
-		}
-		_, _ = fmt.Fprintf(w, `id:"wrk_%s"`, session.Value)
-	}))
-	defer server.Close()
-
-	for _, account := range []string{"first", "second"} {
-		cookies := []*http.Cookie{{Name: "__Host-console_session", Value: account, Domain: "opencode.ai", Path: "/"}}
-		header := fetcher.FromCookies(cookies).CookieHeader("opencode.ai")
-		id, err := detectWorkspaceID(header, server.URL, server.Client())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if id != "wrk_"+account {
-			t.Errorf("session %s resolved %q, want wrk_%s", account, id, account)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "opencode-workspace.txt")); err != nil {
-		t.Errorf("legacy cache should not be modified by detection: %v", err)
-	}
-}
-
-func TestDetectWorkspaceIDRejectsUnauthenticatedSession(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-	}))
-	defer server.Close()
-	client := &http.Client{Timeout: time.Second}
-	if _, err := detectWorkspaceID("auth=stale", server.URL, client); err == nil {
-		t.Fatal("expected error for expired session")
-	}
-}
-
-func TestIsValidWorkspaceID(t *testing.T) {
+func TestListWorkspaceIDs(t *testing.T) {
 	tests := []struct {
-		id    string
-		valid bool
+		name string
+		body string
+		want []string
+		bad  bool
 	}{
-		{"wrk_123", true},
-		{"wrk_", false},
-		{"", false},
-		{"abc_123", false},
-		{"wrk", false},
-		{"wrk_1234567890abcdef", true},
+		{name: "single workspace", body: `[{"id":"wrk_one"}]`, want: []string{"wrk_one"}},
+		{name: "multiple and deduplicated organizations", body: `[{"id":"org_one"},{"id":"wrk_two"},{"id":"org_one"}]`, want: []string{"org_one", "wrk_two"}},
+		{name: "empty", body: `[]`, bad: true},
+		{name: "malformed", body: `[{`, bad: true},
+		{name: "missing id", body: `[{"name":"x"}]`, bad: true},
 	}
-
 	for _, tt := range tests {
-		got := isValidWorkspaceID(tt.id)
-		if got != tt.valid {
-			t.Errorf("isValidWorkspaceID(%q) = %v, want %v", tt.id, got, tt.valid)
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/orgs" || r.Header.Get("Accept") != "application/json" {
+					t.Errorf("unexpected request: %s %s Accept=%q", r.Method, r.URL, r.Header.Get("Accept"))
+				}
+				if got := r.Header.Get("Cookie"); got != "__Host-console_session=secret" {
+					t.Errorf("Cookie header = %q, want only session cookie", got)
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			got, err := listWorkspaceIDs([]*http.Cookie{{Name: "__Host-console_session", Value: "secret", Domain: "opencode.ai"}}, server.URL+"/orgs", server.Client())
+			if tt.bad {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("IDs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListWorkspaceIDsRejectsMissingOrWrongDomainSession(t *testing.T) {
+	for _, cookie := range []*http.Cookie{
+		{Name: "auth", Value: "secret", Domain: "opencode.ai"},
+		{Name: "__Host-console_session", Value: "secret", Domain: ".opencode.ai"},
+		{Name: "__Host-console_session", Value: "", Domain: "opencode.ai"},
+	} {
+		if _, err := listWorkspaceIDs([]*http.Cookie{cookie}, "http://127.0.0.1", http.DefaultClient); err == nil {
+			t.Fatalf("accepted cookie %#v", cookie)
 		}
 	}
 }
 
-func TestExtractWorkspaceID_FromJS(t *testing.T) {
-	text := `somePrefix id: "wrk_abc123", otherField`
-	got := extractWorkspaceID(text)
-	if got != "wrk_abc123" {
-		t.Errorf("extractWorkspaceID = %q, want wrk_abc123", got)
+func TestListWorkspaceIDsRejectsUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
+	defer server.Close()
+	if _, err := listWorkspaceIDs(validSessionCookie(), server.URL, server.Client()); err == nil {
+		t.Fatal("expected unauthorized error")
 	}
 }
 
-func TestExtractWorkspaceID_FromPath(t *testing.T) {
-	text := `href="/workspace/wrk_xyz999/settings"`
-	got := extractWorkspaceID(text)
-	if got != "wrk_xyz999" {
-		t.Errorf("extractWorkspaceID = %q, want wrk_xyz999", got)
+func TestListWorkspaceIDsCapsResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"wrk_one"}]` + strings.Repeat(" ", maxWorkspaceResponseSize)))
+	}))
+	defer server.Close()
+	if _, err := listWorkspaceIDs(validSessionCookie(), server.URL, server.Client()); err == nil {
+		t.Fatal("expected oversized response error")
 	}
 }
 
-func TestExtractWorkspaceID_NotFound(t *testing.T) {
-	text := `no workspace id here`
-	got := extractWorkspaceID(text)
-	if got != "" {
-		t.Errorf("extractWorkspaceID = %q, want empty string", got)
+func TestListWorkspaceIDsBlocksRedirectWithoutForwardingCookie(t *testing.T) {
+	var destinationHit bool
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		destinationHit = true
+		if r.Header.Get("Cookie") != "" {
+			t.Errorf("cookie forwarded to redirect destination: %q", r.Header.Get("Cookie"))
+		}
+	}))
+	defer destination.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, nil, destination.URL, http.StatusFound)
+	}))
+	defer source.Close()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if _, err := listWorkspaceIDs(validSessionCookie(), source.URL, client); err == nil {
+		t.Fatal("expected redirect error")
 	}
+	if destinationHit {
+		t.Fatal("redirect destination was requested")
+	}
+}
+
+func validSessionCookie() []*http.Cookie {
+	return []*http.Cookie{{Name: "__Host-console_session", Value: "secret", Domain: "opencode.ai"}}
+}
+
+func TestDetectWorkspaceIDFromCookiesRejectsMultiple(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"wrk_one"},{"id":"org_two"}]`))
+	}))
+	defer server.Close()
+	if _, err := listWorkspaceIDs(validSessionCookie(), server.URL, server.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := detectWorkspaceIDFromEndpoint(validSessionCookie(), server.URL, server.Client()); err == nil {
+		t.Fatal("expected ambiguous workspace error")
+	}
+}
+
+func detectWorkspaceIDFromEndpoint(cookies []*http.Cookie, endpoint string, client *http.Client) (string, error) {
+	ids, err := listWorkspaceIDs(cookies, endpoint, client)
+	return singleWorkspaceID(ids, err)
 }
