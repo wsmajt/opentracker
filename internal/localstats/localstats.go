@@ -12,6 +12,8 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"opentracker/internal/cache"
@@ -268,8 +270,49 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// resolveBinary finds the OpenCode executable without requiring it on PATH.
+// Bare names honor OPENCODE_BIN first, then PATH, then well-known install
+// locations. Explicit paths are used as-is so tests can point at fixtures.
+func resolveBinary(name string) (string, error) {
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return name, nil
+	}
+	if override := os.Getenv("OPENCODE_BIN"); override != "" {
+		if isExecutable(override) {
+			return override, nil
+		}
+		return "", ErrMissingBinary
+	}
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	home, _ := os.UserHomeDir()
+	for _, candidate := range []string{
+		filepath.Join(home, ".bun", "bin", name),
+		filepath.Join(home, ".local", "bin", name),
+		filepath.Join("/usr/local/bin", name),
+	} {
+		if isExecutable(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", ErrMissingBinary
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode().Perm()&0111 != 0
+}
+
 func runCommand(ctx context.Context, binary string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...)
+	resolved, err := resolveBinary(binary)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, resolved, args...)
 	var stdout, stderr cappedBuffer
 	stdout.max = 1 << 20
 	stderr.max = 64 << 10

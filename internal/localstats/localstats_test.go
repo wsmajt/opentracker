@@ -227,6 +227,49 @@ func TestRunCommandUsesLiteralArgsAndSafeErrors(t *testing.T) {
 	}
 }
 
+func TestResolveBinarySearchesOverrideThenPathThenFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	bunBin := filepath.Join(dir, "home", ".bun", "bin")
+	if err := os.MkdirAll(bunBin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fallback := filepath.Join(bunBin, "opencode")
+	writeExecutable(t, fallback, "#!/bin/sh\nexit 0\n")
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	t.Setenv("OPENCODE_BIN", "")
+	t.Setenv("PATH", binDir)
+
+	if got, err := resolveBinary("opencode"); err != nil || got != fallback {
+		t.Fatalf("fallback resolveBinary() = %q, %v", got, err)
+	}
+
+	override := filepath.Join(dir, "custom-opencode")
+	writeExecutable(t, override, "#!/bin/sh\nexit 0\n")
+	t.Setenv("OPENCODE_BIN", override)
+	if got, err := resolveBinary("opencode"); err != nil || got != override {
+		t.Fatalf("override resolveBinary() = %q, %v", got, err)
+	}
+
+	t.Setenv("OPENCODE_BIN", filepath.Join(dir, "missing"))
+	if _, err := resolveBinary("opencode"); !errors.Is(err, ErrMissingBinary) {
+		t.Fatalf("broken override error = %v", err)
+	}
+	t.Setenv("OPENCODE_BIN", "")
+
+	if err := os.Remove(fallback); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveBinary("opencode"); !errors.Is(err, ErrMissingBinary) {
+		t.Fatalf("missing binary error = %v", err)
+	}
+
+	explicit := filepath.Join(dir, "explicit")
+	if got, err := resolveBinary(explicit); err != nil || got != explicit {
+		t.Fatalf("explicit resolveBinary() = %q, %v", got, err)
+	}
+}
+
 func validStatsFor(now time.Time) []byte {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	return statsForRange(start.UnixMilli(), now.UnixMilli())

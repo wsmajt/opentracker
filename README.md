@@ -87,6 +87,8 @@ This command runs the installed `opencode` CLI with `stats --json --standalone -
 
 OpenTracker does not read the OpenCode database, load account credentials, or make network requests for this command. It delegates to the official CLI, which may create or migrate its database. The output omits cost, model, project, and session history data. Install a current OpenTracker binary to use this command, and make sure `opencode` is available on `PATH`.
 
+The `opencode` binary is resolved via `OPENCODE_BIN` first, then `PATH`, then `~/.bun/bin/opencode`, `~/.local/bin/opencode`, and `/usr/local/bin/opencode`. This matters for graphical panels, whose `PATH` is often smaller than a terminal's.
+
 ### Login
 
 ```bash
