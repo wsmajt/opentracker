@@ -20,6 +20,7 @@ import (
 	"opentracker/internal/browsercookies"
 	"opentracker/internal/cache"
 	"opentracker/internal/config"
+	"opentracker/internal/provider/claude"
 	"opentracker/internal/provider/opencode"
 )
 
@@ -40,6 +41,8 @@ var loginCmd = &cobra.Command{
 		switch provider {
 		case "codex":
 			return loginCodex()
+		case "claude":
+			return loginClaude()
 		case "opencode":
 			url = "https://opencode.ai/console/login"
 		default:
@@ -246,6 +249,14 @@ func loginCodex() error {
 		return fmt.Errorf("codex login failed: %w", err)
 	}
 	fmt.Println("Codex login complete. You can now run: opentracker fetch codex")
+	return nil
+}
+
+func loginClaude() error {
+	if err := claude.ValidateAuth(); err != nil {
+		return err
+	}
+	fmt.Println("Claude Code OAuth credentials found. You can now run: opentracker fetch claude")
 	return nil
 }
 

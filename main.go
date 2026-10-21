@@ -4,6 +4,7 @@ import (
 	"opentracker/cmd"
 
 	// Register providers.
+	_ "opentracker/internal/provider/claude"
 	_ "opentracker/internal/provider/codex"
 	_ "opentracker/internal/provider/opencode"
 )

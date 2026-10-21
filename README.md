@@ -1,11 +1,11 @@
 # OpenTracker
 
-A lightweight CLI tool for tracking AI provider usage limits. Currently supports **OpenCode** (Go plan) and **Codex** (OpenAI/Codex CLI), with a modular architecture designed for easy extension to additional providers.
+A lightweight CLI tool for tracking AI provider usage limits. It supports OpenCode, Codex, and Claude Code OAuth usage.
 
 ## Features
 
 - **Usage tracking** - Monitor rolling, weekly, and monthly usage percentages
-- **Multiple providers** - OpenCode (Go/Zen plans) and Codex (OpenAI usage via Codex CLI auth)
+- **Multiple providers** - OpenCode (Go/Zen plans), Codex, and Claude Code OAuth
 - **Multiple plans** - Support for different OpenCode plans (go, zen) sharing the same workspace and cookies
 - **Verified setup** - Detects the OpenCode workspace from the imported authenticated browser session before saving configuration
 - **Automatic cookie import** - Scans Chrome, Firefox, Zen Browser, and more for session cookies
@@ -26,9 +26,16 @@ opentracker login opencode
 # Or log in to Codex (runs 'codex login')
 opentracker login codex
 
+# Claude Code OAuth (uses existing Claude Code credentials)
+opentracker login claude
+
 # Fetch usage
 opentracker fetch opencode-go
 opentracker fetch codex
+opentracker fetch claude
+
+# Show today's local OpenCode totals
+opentracker stats opencode
 ```
 
 ## Installation
@@ -48,6 +55,8 @@ sudo make install
 yay -S opentracker-cli
 ```
 
+The current test release is `1.5.0-beta.1`. The AUR package `opentracker-cli` is at `1.5.0beta1-1`, replacing its stable version during beta testing. The planned stable release is `1.5.0`.
+
 ## Usage
 
 ### Fetch usage data
@@ -56,14 +65,27 @@ yay -S opentracker-cli
 # Fetch current usage (cached for 90 seconds)
 opentracker fetch opencode-go
 opentracker fetch codex
+opentracker fetch claude
 
 # Force refresh (skip cache)
 opentracker fetch opencode-go --force
 opentracker fetch codex --force
+opentracker fetch claude --force
 
 # Check version
 opentracker version
 ```
+
+### Local OpenCode stats
+
+```bash
+opentracker stats opencode
+opentracker stats opencode --force
+```
+
+This command runs the installed `opencode` CLI with `stats --json --standalone --days 0`. It reports today's total tokens and session count as JSON, and caches the result for five minutes. Use it while the panel is open; it does not run as a background service. `--force` skips the cache.
+
+OpenTracker does not read the OpenCode database, load account credentials, or make network requests for this command. It delegates to the official CLI, which may create or migrate its database. The output omits cost, model, project, and session history data. Install a current OpenTracker binary to use this command, and make sure `opencode` is available on `PATH`.
 
 ### Login
 
@@ -87,6 +109,10 @@ The keyring must be available and unlocked when logging in and fetching OpenCode
 Fetch results are cached for 90 seconds. Use `opentracker fetch opencode-go --force` (or `opencode-zen --force`) to bypass the cache when you need an immediate fresh result. A successful login clears both OpenCode plan caches.
 
 **Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
+
+**Claude** reuses the access token from `~/.claude/.credentials.json` and does not start Claude Code or modify its files. Set `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when Claude Code uses a custom config directory. You can instead set `OPENTRACKER_CLAUDE_ACCESS_TOKEN`. An explicitly set token takes precedence, and the API response determines whether it is accepted. OpenTracker does not fall back to a credentials file when the environment variable is set. macOS keychain-only credentials are not supported. The usage endpoint is private to Claude Code and may change. OpenTracker does not refresh tokens, and expired credentials require signing in with Claude Code again. A 429 response creates a credential-specific cooldown that also applies to forced fetches.
+
+Claude output includes `fiveHour` and `sevenDay` windows, plus `sonnet` and `opus` windows when the API returns them. Each window has `usedPercent`, `resetsAt` when supplied, and `windowSeconds`. Plan metadata may appear as `plan`; `source` is `claude-oauth`.
 
 ### Example output
 
@@ -123,6 +149,8 @@ Full documentation is available in the [GitHub Wiki](https://github.com/wsmajt/o
 - [Providers](https://github.com/wsmajt/opentracker/wiki/Providers) — Provider system overview and how to add new ones
 - [OpenCode](https://github.com/wsmajt/opentracker/wiki/OpenCode) — OpenCode provider details, login, and usage
 - [Codex](https://github.com/wsmajt/opentracker/wiki/Codex) — Codex/OpenAI provider details, login, and usage
+- [Claude](https://github.com/wsmajt/opentracker/wiki/Claude) — Claude Code OAuth usage, credential paths, and limitations
+- [Local OpenCode stats](https://github.com/wsmajt/opentracker/wiki/LocalStats) — Local token and session totals, separate from quota data
 
 ## License
 

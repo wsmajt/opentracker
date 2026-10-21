@@ -89,6 +89,8 @@ func providerLoginDescription(name string) string {
 	switch name {
 	case "codex":
 		return "Run 'codex login'"
+	case "claude":
+		return "Use existing Claude Code OAuth credentials"
 	case "opencode":
 		return "Open opencode.ai and import browser cookies"
 	default:

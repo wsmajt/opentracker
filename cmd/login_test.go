@@ -456,3 +456,50 @@ func TestCompleteOpenCodeLoginSequentialSwitchesUseLatestSelector(t *testing.T) 
 		t.Fatal("intermediate credential remained after sequential switches")
 	}
 }
+
+func TestLoginClaudeValidatesExistingCredentialsWithoutWriting(t *testing.T) {
+	for _, tc := range []struct{ name, content, want string }{
+		{name: "valid", content: `{"claudeAiOauth":{"accessToken":"valid-token"}}`},
+		{name: "missing", want: "not found"},
+		{name: "malformed", content: "not-json", want: "cannot parse"},
+		{name: "expired", content: `{"claudeAiOauth":{"accessToken":"old-token","expiresAt":1}}`, want: "expired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, "claude"))
+			t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+			t.Setenv("OPENTRACKER_CLAUDE_ACCESS_TOKEN", "placeholder")
+			if err := os.Unsetenv("OPENTRACKER_CLAUDE_ACCESS_TOKEN"); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(home, "claude", ".credentials.json")
+			if tc.content != "" {
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(tc.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := tc.content
+			err := loginClaude()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("login error = %v, want %q", err, tc.want)
+			}
+			if tc.content != "" {
+				after, readErr := os.ReadFile(path)
+				if readErr != nil || string(after) != before {
+					t.Fatalf("credentials changed: %q, %v", after, readErr)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(home, ".config", "opentracker", "config.json")); !os.IsNotExist(err) {
+				t.Fatalf("login wrote config: %v", err)
+			}
+		})
+	}
+}
