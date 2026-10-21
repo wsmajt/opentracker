@@ -79,8 +79,8 @@ func importViaKooky(ctx context.Context, logger func(string)) ([]*http.Cookie, s
 		cookiesSeq := store.TraverseCookies(kooky.Valid, kooky.DomainContains("opencode.ai")).OnlyCookies()
 		var cookies []*http.Cookie
 
-		for cookie := range cookiesSeq {
-			if cookie == nil {
+		for cookie, err := range cookiesSeq {
+			if err != nil || cookie == nil {
 				continue
 			}
 
@@ -202,8 +202,8 @@ func readFirefoxStore(ctx context.Context, path string, logger func(string)) ([]
 	var cookies []*http.Cookie
 	hasSession := false
 
-	for cookie := range cookiesSeq {
-		if cookie == nil {
+	for cookie, err := range cookiesSeq {
+		if err != nil || cookie == nil {
 			continue
 		}
 
