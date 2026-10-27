@@ -20,6 +20,7 @@ import (
 	"opentracker/internal/model"
 	"opentracker/internal/provider"
 	"opentracker/internal/provider/cliproxyapi"
+	"opentracker/internal/provider/codex"
 )
 
 func TestOpenCodeProviderErrorPrecedesLegacyCache(t *testing.T) {
@@ -53,6 +54,7 @@ func TestOpenCodeProviderErrorPrecedesLegacyCache(t *testing.T) {
 type fakeCodexProvider struct {
 	err   error
 	calls *int
+	usage interface{}
 }
 
 func (*fakeCodexProvider) Name() string { return "codex" }
@@ -62,7 +64,10 @@ func (p *fakeCodexProvider) Fetch(context.Context) (string, error) {
 	}
 	return "local", p.err
 }
-func (*fakeCodexProvider) Parse(string) (interface{}, error) {
+func (p *fakeCodexProvider) Parse(string) (interface{}, error) {
+	if p.usage != nil {
+		return p.usage, nil
+	}
 	return map[string]string{"local": "usage"}, nil
 }
 
@@ -178,6 +183,82 @@ func TestCodexProxyCombinationAndFailures(t *testing.T) {
 			}
 			if strings.Contains(stderr, "test-management-key") {
 				t.Fatal("management key leaked to stderr")
+			}
+		})
+	}
+}
+
+func TestCodexProxyEmailLabelsMatchingLocalAccount(t *testing.T) {
+	const email = "person@example.invalid"
+	for _, tc := range []struct {
+		name            string
+		localID         string
+		proxyID         string
+		localEmail      string
+		wantLocal       string
+		wantProxy       bool
+		localPointer    bool
+		emptyProxyEmail bool
+	}{
+		{name: "matching ID fills empty local email", localID: "shared-id", proxyID: "shared-id", wantLocal: email},
+		{name: "matching ID with empty proxy email", localID: "shared-id", proxyID: "shared-id", emptyProxyEmail: true},
+		{name: "mismatched ID leaves local unlabeled", localID: "local-id", proxyID: "proxy-id", wantProxy: true},
+		{name: "missing proxy ID leaves proxy account separate", localID: "local-id", proxyID: "", wantProxy: true},
+		{name: "missing IDs leave proxy account separate", wantProxy: true},
+		{name: "existing local email is preserved", localID: "shared-id", proxyID: "shared-id", localEmail: "existing@example.invalid", wantLocal: "existing@example.invalid", localPointer: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+			t.Setenv("OPENTRACKER_CODEX_ACCESS_TOKEN", "fake-local-token")
+			t.Setenv("OPENTRACKER_CODEX_ACCOUNT_ID", tc.localID)
+			proxyEmail := email
+			if tc.emptyProxyEmail {
+				proxyEmail = ""
+			}
+			credentials := fmt.Sprintf(`{"files":[{"auth_index":"proxy","provider":"codex","email":%q,"chatgpt_account_id":%q}]}`, proxyEmail, tc.proxyID)
+			calls := 0
+			proxyTestServer(t, credentials, &calls)
+			var localUsage interface{} = codex.UsageSnapshot{AccountEmail: tc.localEmail}
+			if tc.localPointer {
+				localUsage = &codex.UsageSnapshot{AccountEmail: tc.localEmail}
+			}
+			a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
+			out, stderr, err := captureFetchOutput(t, func() error {
+				return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
+					return &fakeCodexProvider{usage: localUsage}, nil
+				})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(stderr, email) || strings.Contains(stderr, "existing@example.invalid") {
+				t.Fatalf("account email leaked to stderr: %q", stderr)
+			}
+			var results []model.ProviderResult
+			if err := json.Unmarshal([]byte(out), &results); err != nil {
+				t.Fatalf("decode output: %v; output=%q", err, out)
+			}
+			var localCount, proxyCount int
+			for _, result := range results {
+				switch result.Provider {
+				case "codex":
+					localCount++
+					usage := result.Usage.(map[string]any)
+					if got := usage["accountEmail"]; got != tc.wantLocal && (got != nil || tc.wantLocal != "") {
+						t.Errorf("local accountEmail=%v, want %q", got, tc.wantLocal)
+					}
+				case "cliproxyapi":
+					proxyCount++
+					usage := result.Usage.(map[string]any)
+					if got := usage["accountEmail"]; got != proxyEmail && (got != nil || proxyEmail != "") {
+						t.Errorf("proxy accountEmail=%v, want %q", got, proxyEmail)
+					}
+				}
+			}
+			if localCount != 1 || (proxyCount == 1) != tc.wantProxy {
+				t.Fatalf("local results=%d proxy results=%d, want one local and proxy=%t; output=%s", localCount, proxyCount, tc.wantProxy, out)
 			}
 		})
 	}

@@ -340,6 +340,19 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 			seenIDs := make(map[string]struct{}, len(accounts))
 			for _, account := range accounts {
 				if localFetched && includeLocal && account.ID != "" && localID != "" && account.ID == localID {
+					if account.Email != "" {
+						switch usage := results[0].Usage.(type) {
+						case codex.UsageSnapshot:
+							if usage.AccountEmail == "" {
+								usage.AccountEmail = account.Email
+								results[0].Usage = usage
+							}
+						case *codex.UsageSnapshot:
+							if usage != nil && usage.AccountEmail == "" {
+								usage.AccountEmail = account.Email
+							}
+						}
+					}
 					continue
 				}
 				if account.ID != "" {
