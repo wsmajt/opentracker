@@ -142,6 +142,11 @@ func mapUsageResponse(api UsageResponse, email string, now time.Time) UsageSnaps
 	return snapshot
 }
 
+// MapUsageResponse converts an upstream usage payload to the public snapshot.
+func MapUsageResponse(api UsageResponse, email string, now time.Time) UsageSnapshot {
+	return mapUsageResponse(api, email, now)
+}
+
 func mapWindow(window *APIWindow) *RateWindow {
 	if window == nil {
 		return nil

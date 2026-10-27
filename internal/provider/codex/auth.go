@@ -74,3 +74,12 @@ func defaultCodexAuthFile() string {
 	}
 	return filepath.Join(home, ".codex", "auth.json")
 }
+
+// ConfiguredAccountID returns the active local Codex account identifier, if available.
+func ConfiguredAccountID() string {
+	auth, err := loadAuth()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.AccountID)
+}

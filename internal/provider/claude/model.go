@@ -52,6 +52,11 @@ func parseUsage(data string, plan string, now time.Time) (UsageSnapshot, error) 
 	return snapshot, nil
 }
 
+// ParseUsage maps a Claude OAuth usage response for accounts without local plan metadata.
+func ParseUsage(data string) (UsageSnapshot, error) {
+	return parseUsage(data, "", time.Now())
+}
+
 func mapWindow(value *apiWindow, seconds int64) *RateWindow {
 	if value == nil || value.Utilization == nil || math.IsNaN(*value.Utilization) || math.IsInf(*value.Utilization, 0) || *value.Utilization < 0 || *value.Utilization > 100 {
 		return nil

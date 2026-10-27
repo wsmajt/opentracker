@@ -109,6 +109,15 @@ func HasConfiguredAuth() bool {
 	return err == nil && a.token != ""
 }
 
+// AuthStatus distinguishes missing Claude credentials from a configured but invalid source.
+func AuthStatus() (bool, error) {
+	a, err := loadAuth()
+	if err != nil {
+		return true, err
+	}
+	return a.token != "", nil
+}
+
 // ValidateAuth checks the active Claude Code credential source without exposing its token.
 func ValidateAuth() error {
 	a, err := loadAuth()

@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"opentracker/internal/app"
 	"opentracker/internal/cache"
 	"opentracker/internal/config"
+	"opentracker/internal/provider/cliproxyapi"
 	"opentracker/internal/provider/opencode"
 )
 
@@ -502,4 +506,119 @@ func TestLoginClaudeValidatesExistingCredentialsWithoutWriting(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoginCLIProxyAPIVerifiesAndStoresWithoutPrintingKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(cliproxyapi.EnvKey, "")
+	const secret = "management-private-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v8/management/credentials" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+secret {
+			t.Errorf("key was not sent for verification")
+		}
+		_, _ = fmt.Fprint(w, `{"files":[]}`)
+	}))
+	defer server.Close()
+	t.Setenv(cliproxyapi.EnvURL, server.URL)
+	store := newTestCredentialStore()
+	var prompt strings.Builder
+	err := loginCLIProxyAPIWithPrompt(context.Background(), &prompt, func() ([]byte, error) { return []byte(secret), nil }, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt.String(), secret) {
+		t.Fatal("management key appeared in prompt output")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, _ := json.Marshal(cfg)
+	if strings.Contains(string(serialized), secret) {
+		t.Fatal("management key was written to config")
+	}
+	if len(store.values) != 1 {
+		t.Fatalf("keyring values=%d, want 1", len(store.values))
+	}
+	var selected cliproxyapiConfigTest
+	if err := json.Unmarshal(cfg.Providers["cliproxyapi"], &selected); err != nil || selected.CredentialID == "" {
+		t.Fatalf("credential reference=%+v err=%v", selected, err)
+	}
+	if store.values[selected.CredentialID] != secret {
+		t.Fatal("verified key was not stored in keyring")
+	}
+}
+
+func TestLoginCLIProxyAPIFailureKeepsPreviousKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(cliproxyapi.EnvKey, "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "management-private-response", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	t.Setenv(cliproxyapi.EnvURL, server.URL)
+	store := newTestCredentialStore()
+	store.values["old-id"] = "old-secret"
+	oldRef, _ := json.Marshal(cliproxyapiConfigTest{CredentialID: "old-id"})
+	if err := (&config.Config{Providers: map[string]json.RawMessage{"cliproxyapi": oldRef}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	var prompt strings.Builder
+	err := loginCLIProxyAPIWithPrompt(context.Background(), &prompt, func() ([]byte, error) { return []byte("new-secret"), nil }, store)
+	if err == nil || strings.Contains(err.Error(), "management-private-response") {
+		t.Fatalf("unsafe verification error: %v", err)
+	}
+	cfg, loadErr := config.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	var selected cliproxyapiConfigTest
+	if json.Unmarshal(cfg.Providers["cliproxyapi"], &selected) != nil || selected.CredentialID != "old-id" {
+		t.Fatalf("old config changed: %+v", selected)
+	}
+	if store.values["old-id"] != "old-secret" || len(store.values) != 1 {
+		t.Fatalf("old key changed: %#v", store.values)
+	}
+}
+
+func TestLoginCLIProxyAPIRejectsMalformedVerificationBeforeReplacingKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(cliproxyapi.EnvKey, "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer server.Close()
+	t.Setenv(cliproxyapi.EnvURL, server.URL)
+	store := newTestCredentialStore()
+	store.values["old-id"] = "old-secret"
+	oldRef, _ := json.Marshal(cliproxyapiConfigTest{CredentialID: "old-id"})
+	if err := (&config.Config{Providers: map[string]json.RawMessage{"cliproxyapi": oldRef}}).Save(); err != nil {
+		t.Fatal(err)
+	}
+	var prompt strings.Builder
+	err := loginCLIProxyAPIWithPrompt(context.Background(), &prompt, func() ([]byte, error) { return []byte("new-secret"), nil }, store)
+	if err == nil {
+		t.Fatal("malformed credentials response passed verification")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected cliproxyapiConfigTest
+	if json.Unmarshal(cfg.Providers["cliproxyapi"], &selected) != nil || selected.CredentialID != "old-id" {
+		t.Fatalf("malformed response replaced existing selector: %+v", selected)
+	}
+	if len(store.values) != 1 || store.values["old-id"] != "old-secret" {
+		t.Fatalf("existing key changed: %#v", store.values)
+	}
+}
+
+type cliproxyapiConfigTest struct {
+	CredentialID string `json:"credentialId"`
 }

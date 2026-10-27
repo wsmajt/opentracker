@@ -26,12 +26,16 @@ opentracker login opencode
 # Or log in to Codex (runs 'codex login')
 opentracker login codex
 
+# Save a CLIProxyAPI management key in the system keyring
+opentracker login cliproxyapi
+
 # Claude Code OAuth (uses existing Claude Code credentials)
 opentracker login claude
 
 # Fetch usage
 opentracker fetch opencode-go
 opentracker fetch codex
+opentracker fetch cliproxyapi
 opentracker fetch claude
 
 # Show today's local OpenCode totals
@@ -55,7 +59,7 @@ sudo make install
 yay -S opentracker-cli
 ```
 
-The current test release is `1.5.0-beta.1`. The AUR package `opentracker-cli` is at `1.5.0beta1-1`, replacing its stable version during beta testing. The planned stable release is `1.5.0`.
+The current test release is `1.5.0-beta.3`. The AUR package `opentracker-cli` may lag behind this source release during beta testing. The planned stable release is `1.5.0`.
 
 ## Usage
 
@@ -70,6 +74,7 @@ opentracker fetch claude
 # Force refresh (skip cache)
 opentracker fetch opencode-go --force
 opentracker fetch codex --force
+opentracker fetch cliproxyapi --force
 opentracker fetch claude --force
 
 # Check version
@@ -112,6 +117,16 @@ Fetch results are cached for 90 seconds. Use `opentracker fetch opencode-go --fo
 
 **Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
 
+### CLIProxyAPI accounts
+
+Run `opentracker login cliproxyapi` to enter the management key at a hidden terminal prompt. OpenTracker checks the key with CLIProxyAPI before replacing the saved key, then stores it in the operating system keyring. It does not put the key in the config file or command history. Login requires an interactive terminal and an available, unlocked system keyring.
+
+For automation, set `OPENTRACKER_CLIPROXYAPI_KEY`. This environment variable takes precedence over the saved key. The default management URL is `http://127.0.0.1:8317`. Set `OPENTRACKER_CLIPROXYAPI_URL` to change it. HTTP is accepted only for loopback hosts. Remote hosts must use HTTPS. The client does not follow redirects. Set the URL in both the login and fetch environments when using a non-default endpoint. If no key is configured, `fetch cliproxyapi` reports the login command and environment variable to use.
+
+`opentracker fetch cliproxyapi` fetches active Codex and Claude credentials exposed by CLIProxyAPI's v8 management API. `opentracker fetch codex` keeps the local Codex result and appends proxy Codex accounts. `opentracker fetch claude` keeps the local Claude result when configured and appends proxy Claude accounts. Proxy results use provider `cliproxyapi` and include `accountProvider` to identify the upstream service. Codex accounts are deduplicated only when both sources provide the same non-empty authoritative ChatGPT account ID. CLIProxyAPI does not provide a reliable Claude account ID, so Claude results remain separate even when emails match. Emails are labels, not account IDs.
+
+Successful accounts go to stdout as JSON. Per-account failures go to stderr with a safe account-list ordinal, and the command exits with an error status if any account fails. A CLIProxyAPI 429 response asks you to retry later. OpenTracker does not refresh proxy tokens. `fetch all` fetches proxy accounts once and does not repeat them through the Codex or Claude fetch. Proxy and combined results bypass cache. Local-only fetches keep their existing cache behavior, and Claude's local rate-limit cooldown still applies.
+
 **Claude** reuses the access token from `~/.claude/.credentials.json` and does not start Claude Code or modify its files. Set `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when Claude Code uses a custom config directory. You can instead set `OPENTRACKER_CLAUDE_ACCESS_TOKEN`. An explicitly set token takes precedence, and the API response determines whether it is accepted. OpenTracker does not fall back to a credentials file when the environment variable is set. macOS keychain-only credentials are not supported. The usage endpoint is private to Claude Code and may change. OpenTracker does not refresh tokens, and expired credentials require signing in with Claude Code again. A 429 response creates a credential-specific cooldown that also applies to forced fetches.
 
 Claude output includes `fiveHour` and `sevenDay` windows, plus `sonnet` and `opus` windows when the API returns them. Each window has `usedPercent`, `resetsAt` when supplied, and `windowSeconds`. Plan metadata may appear as `plan`; `source` is `claude-oauth`.
@@ -152,6 +167,7 @@ Full documentation is available in the [GitHub Wiki](https://github.com/wsmajt/o
 - [OpenCode](https://github.com/wsmajt/opentracker/wiki/OpenCode) — OpenCode provider details, login, and usage
 - [Codex](https://github.com/wsmajt/opentracker/wiki/Codex) — Codex/OpenAI provider details, login, and usage
 - [Claude](https://github.com/wsmajt/opentracker/wiki/Claude) — Claude Code OAuth usage, credential paths, and limitations
+- [CLIProxyAPI](https://github.com/wsmajt/opentracker/wiki/CLIProxyAPI) — Management API setup, proxy accounts, and security
 - [Local OpenCode stats](https://github.com/wsmajt/opentracker/wiki/LocalStats) — Local token and session totals, separate from quota data
 
 ## License

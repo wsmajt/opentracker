@@ -5,6 +5,7 @@ import (
 
 	// Register providers.
 	_ "opentracker/internal/provider/claude"
+	_ "opentracker/internal/provider/cliproxyapi"
 	_ "opentracker/internal/provider/codex"
 	_ "opentracker/internal/provider/opencode"
 )

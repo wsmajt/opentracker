@@ -15,12 +15,14 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"opentracker/internal/app"
 	"opentracker/internal/browsercookies"
 	"opentracker/internal/cache"
 	"opentracker/internal/config"
 	"opentracker/internal/provider/claude"
+	"opentracker/internal/provider/cliproxyapi"
 	"opentracker/internal/provider/opencode"
 )
 
@@ -41,6 +43,8 @@ var loginCmd = &cobra.Command{
 		switch provider {
 		case "codex":
 			return loginCodex()
+		case "cliproxyapi":
+			return loginCLIProxyAPI()
 		case "claude":
 			return loginClaude()
 		case "opencode":
@@ -87,6 +91,39 @@ var loginCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func loginCLIProxyAPI() error {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return fmt.Errorf("CLIProxyAPI login requires an interactive terminal; set %s for automation", cliproxyapi.EnvKey)
+	}
+	return loginCLIProxyAPIWithPrompt(context.Background(), os.Stderr, func() ([]byte, error) {
+		return term.ReadPassword(fd)
+	}, cliproxyapi.NewCredentialStore())
+}
+
+func loginCLIProxyAPIWithPrompt(ctx context.Context, prompt io.Writer, readPassword func() ([]byte, error), store cliproxyapi.CredentialStore) error {
+	if _, err := fmt.Fprint(prompt, "CLIProxyAPI management key: "); err != nil {
+		return fmt.Errorf("cannot show key prompt")
+	}
+	secret, err := readPassword()
+	_, _ = fmt.Fprintln(prompt)
+	if err != nil {
+		return fmt.Errorf("cannot read CLIProxyAPI key from terminal")
+	}
+	if err := cliproxyapi.VerifyManagementKey(ctx, string(secret)); err != nil {
+		return fmt.Errorf("cannot verify CLIProxyAPI management key: %w", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("cannot load config")
+	}
+	if err := cliproxyapi.SaveManagementKey(cfg, string(secret), store); err != nil {
+		return fmt.Errorf("cannot save CLIProxyAPI login: %w", err)
+	}
+	_, _ = fmt.Fprintln(prompt, "CLIProxyAPI login saved in the system keyring.")
+	return nil
 }
 
 func loginOpenCodeWithWorkspaceList(cookies []*http.Cookie, store opencode.CredentialStore, listWorkspaces func([]*http.Cookie) ([]string, error), choiceReader io.Reader) (string, error) {

@@ -7,6 +7,7 @@ require (
 	github.com/gofrs/flock v0.13.1
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.7
+	golang.org/x/term v0.40.0
 )
 
 require (
