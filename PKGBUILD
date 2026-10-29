@@ -1,8 +1,8 @@
 # Maintainer: wsmajt <kacpermusz@gmail.com>
 pkgname=opentracker-cli
-pkgver=1.5.0
+pkgver=1.5.1
 pkgrel=1
-_version=1.5.0
+_version=1.5.1
 pkgdesc="CLI for tracking AI provider usage limits"
 arch=('x86_64' 'aarch64')
 url="https://github.com/wsmajt/opentracker"
@@ -15,7 +15,7 @@ sha256sums=('SKIP')
 
 build() {
     cd "opentracker-$_version"
-    make build VERSION=1.5.0
+    make build VERSION=1.5.1
 }
 
 package() {
