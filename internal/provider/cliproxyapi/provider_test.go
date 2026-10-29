@@ -3,6 +3,7 @@ package cliproxyapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,10 +24,14 @@ func isolateProxyProviderEnvironment(t *testing.T) {
 	t.Setenv(EnvURL, "")
 }
 
+func int64Ptr(value int64) *int64 { return &value }
+
 func TestFetchCodexCredentials(t *testing.T) {
 	isolateProxyProviderEnvironment(t)
 	idToken := map[string]any{"chatgpt_account_id": "acct-1"}
 	var apiCall map[string]any
+	var usageCall map[string]any
+	resetCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer management-secret" {
 			t.Errorf("management authorization missing")
@@ -43,7 +48,13 @@ func TestFetchCodexCredentials(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&apiCall); err != nil {
 				t.Error(err)
 			}
-			_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"plan_type\":\"plus\",\"rate_limit\":{\"primary_window\":{\"used_percent\":25}}}"}`))
+			if apiCall["url"] == resetCreditsURL {
+				resetCalls++
+			} else {
+				encoded, _ := json.Marshal(apiCall)
+				_ = json.Unmarshal(encoded, &usageCall)
+			}
+			_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"plan_type\":\"plus\",\"rate_limit\":{\"primary_window\":{\"used_percent\":25}},\"rate_limit_reset_credits\":{\"available_count\":3}}"}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -58,20 +69,121 @@ func TestFetchCodexCredentials(t *testing.T) {
 	if len(failures) != 0 || len(accounts) != 2 {
 		t.Fatalf("accounts=%d failures=%d", len(accounts), len(failures))
 	}
+	if resetCalls != 2 {
+		t.Fatalf("reset-credit requests=%d, want 1 per Codex account", resetCalls)
+	}
 	usage, ok := accounts[0].Usage.(codex.UsageSnapshot)
 	if accounts[0].ID != "acct-1" || accounts[0].Email != "same@example.test" || !ok || usage.Plan != "plus" || accounts[1].ID != "acct-2" {
 		t.Fatalf("unexpected account: %+v", accounts[0])
 	}
-	if apiCall["method"] != "GET" || apiCall["url"] != usageURL || apiCall["authIndex"] != "idx-2" {
-		t.Fatalf("unexpected api-call request: %#v", apiCall)
+	if usageCall["method"] != "GET" || usageCall["url"] != usageURL || usageCall["authIndex"] != "idx-2" {
+		t.Fatalf("unexpected usage request: %#v", usageCall)
 	}
-	header := apiCall["header"].(map[string]any)
+	header := usageCall["header"].(map[string]any)
 	if header["Authorization"] != "Bearer $TOKEN$" || header["Content-Type"] != "application/json" || header["User-Agent"] != requestUserAgent || header["Chatgpt-Account-Id"] != "acct-2" {
 		t.Fatalf("unexpected headers: %#v", header)
 	}
 	serialized, _ := json.Marshal(accounts)
 	if strings.Contains(string(serialized), "management-secret") || strings.Contains(string(serialized), "chatgpt_account_id\":\"acct-1\"") {
 		t.Fatal("credential leaked into account result")
+	}
+}
+
+func TestFetchCodexResetCreditsFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		response      string
+		status        int
+		wantAvailable *int64
+		wantCredits   int
+	}{
+		{name: "integer", response: `{"available_count":4,"credits":[{"reset_type":"codex_rate_limits","status":"available","expires_at":"2026-04-05T06:07:08Z"},{"reset_type":"codex_rate_limits","status":"available","expires_at":null}]}`, status: http.StatusOK, wantAvailable: int64Ptr(4), wantCredits: 2},
+		{name: "zero", response: `{"available_count":0}`, status: http.StatusOK, wantAvailable: int64Ptr(0)},
+		{name: "absent", response: `{}`, status: http.StatusOK},
+		{name: "null", response: `{"available_count":null}`, status: http.StatusOK},
+		{name: "rate limited", response: `private response`, status: http.StatusTooManyRequests},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateProxyProviderEnvironment(t)
+			resetCalls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v8/management/credentials" {
+					_, _ = w.Write([]byte(`{"files":[{"auth_index":"codex-1","provider":"codex","chatgpt_account_id":"acct-1"}]}`))
+					return
+				}
+				var request apiCallRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				switch request.URL {
+				case usageURL:
+					_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"plan_type\":\"plus\",\"rate_limit\":{\"primary_window\":{\"used_percent\":25}}}"}`))
+				case resetCreditsURL:
+					resetCalls++
+					if request.Method != http.MethodGet || request.AuthIndex != "codex-1" {
+						t.Errorf("unexpected reset request: %+v", request)
+					}
+					if request.Header["Authorization"] != "Bearer $TOKEN$" || request.Header["Accept"] != "application/json" || request.Header["OpenAI-Beta"] != "codex-1" || request.Header["Originator"] != "Codex Desktop" || request.Header["Chatgpt-Account-Id"] != "acct-1" {
+						t.Errorf("unexpected reset request headers: %+v", request.Header)
+					}
+					body, _ := json.Marshal(tc.response)
+					_, _ = fmt.Fprintf(w, `{"status_code":%d,"body":%s}`, tc.status, body)
+				default:
+					t.Errorf("unexpected upstream URL %q", request.URL)
+				}
+			}))
+			defer server.Close()
+			t.Setenv(EnvURL, server.URL)
+			t.Setenv(EnvKey, "management-test-key")
+
+			accounts, failures, err := FetchCodexWithConfig(t.Context(), &config.Config{Providers: map[string]json.RawMessage{}})
+			if err != nil || len(failures) != 0 || len(accounts) != 1 {
+				t.Fatalf("accounts=%d failures=%v err=%v", len(accounts), failures, err)
+			}
+			if resetCalls != 1 {
+				t.Fatalf("reset-credit requests=%d, want 1", resetCalls)
+			}
+			usage, ok := accounts[0].Usage.(codex.UsageSnapshot)
+			if !ok || usage.Primary == nil || usage.ResetCredits == nil && tc.wantAvailable != nil {
+				t.Fatalf("Codex usage = %#v", accounts[0].Usage)
+			}
+			if tc.wantAvailable == nil {
+				if usage.ResetCredits != nil {
+					t.Fatalf("ResetCredits = %#v, want absent", usage.ResetCredits)
+				}
+				return
+			}
+			if usage.ResetCredits.Available == nil || *usage.ResetCredits.Available != *tc.wantAvailable {
+				t.Fatalf("ResetCredits = %#v, want available=%d", usage.ResetCredits, *tc.wantAvailable)
+			}
+			if len(usage.ResetCredits.Credits) != tc.wantCredits {
+				t.Fatalf("reset-credit details=%#v, want %d", usage.ResetCredits.Credits, tc.wantCredits)
+			}
+		})
+	}
+}
+
+func TestFetchCodexResetCreditsWithoutQuotaWindows(t *testing.T) {
+	isolateProxyProviderEnvironment(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v8/management/credentials" {
+			_, _ = w.Write([]byte(`{"files":[{"auth_index":"codex-1","provider":"codex"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"rate_limit_reset_credits\":{\"available_count\":2,\"applicable_available_count\":1}}"}`))
+	}))
+	defer server.Close()
+	t.Setenv(EnvURL, server.URL)
+	t.Setenv(EnvKey, "management-test-key")
+
+	accounts, failures, err := FetchCodexWithConfig(t.Context(), &config.Config{Providers: map[string]json.RawMessage{}})
+	if err != nil || len(failures) != 0 || len(accounts) != 1 {
+		t.Fatalf("accounts=%d failures=%v err=%v", len(accounts), failures, err)
+	}
+	usage, ok := accounts[0].Usage.(codex.UsageSnapshot)
+	if !ok || usage.ResetCredits == nil || usage.ResetCredits.Available == nil || *usage.ResetCredits.Available != 2 || usage.ResetCredits.Applicable == nil || *usage.ResetCredits.Applicable != 1 {
+		t.Fatalf("Codex usage = %#v", accounts[0].Usage)
 	}
 }
 
@@ -93,7 +205,7 @@ func TestFetchMixedCodexAndClaudeCredentials(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"five_hour\":{\"utilization\":42}}"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"plan_type\":\"plus\"}"}`))
+		_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"plan_type\":\"plus\",\"rate_limit_reset_credits\":{\"available_count\":2}}"}`))
 	}))
 	defer server.Close()
 	t.Setenv(EnvURL, server.URL)
@@ -109,10 +221,10 @@ func TestFetchMixedCodexAndClaudeCredentials(t *testing.T) {
 	if !ok || claudeUsage.FiveHour == nil || claudeUsage.FiveHour.UsedPercent != 42 {
 		t.Fatalf("Claude parser result = %#v", accounts[0].Usage)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("api-call count=%d want 2", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("api-call count=%d want 3", len(calls))
 	}
-	claudeCall := calls[1]
+	claudeCall := calls[2]
 	if claudeCall["url"] != claudeUsageURL || claudeCall["authIndex"] != "claude-1" {
 		t.Fatalf("unexpected Claude request: %#v", claudeCall)
 	}

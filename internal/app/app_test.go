@@ -97,6 +97,10 @@ func captureFetchOutput(t *testing.T, run func() error) (string, string, error) 
 }
 
 func proxyTestServer(t *testing.T, credentials string, calls *int) *httptest.Server {
+	return proxyTestServerWithResetCalls(t, credentials, calls, nil, true)
+}
+
+func proxyTestServerWithResetCalls(t *testing.T, credentials string, quotaCalls, resetCalls *int, includeQuotaResetCredits bool) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v8/management/credentials" {
@@ -104,9 +108,18 @@ func proxyTestServer(t *testing.T, credentials string, calls *int) *httptest.Ser
 			return
 		}
 		if r.URL.Path == "/v8/management/requests/api-call" {
-			*calls++
 			var req map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req["url"] == "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits" {
+				if resetCalls != nil {
+					*resetCalls++
+				}
+				_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{\"available_count\":7}"}`)
+				return
+			}
+			if quotaCalls != nil {
+				*quotaCalls++
+			}
 			if strings.Contains(fmt.Sprint(req["authIndex"]), "bad") {
 				_, _ = fmt.Fprint(w, `{"status_code":500,"body":"ignored"}`)
 				return
@@ -115,7 +128,12 @@ func proxyTestServer(t *testing.T, credentials string, calls *int) *httptest.Ser
 				_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{\"five_hour\":{\"utilization\":37}}"}`)
 				return
 			}
-			_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{\"plan_type\":\"plus\"}"}`)
+			codexBody := `{"plan_type":"plus"}`
+			if includeQuotaResetCredits {
+				codexBody = `{"plan_type":"plus","rate_limit_reset_credits":{"available_count":3}}`
+			}
+			response, _ := json.Marshal(map[string]any{"status_code": 200, "body": codexBody})
+			_, _ = w.Write(response)
 			return
 		}
 		http.NotFound(w, r)
@@ -124,6 +142,79 @@ func proxyTestServer(t *testing.T, credentials string, calls *int) *httptest.Ser
 	t.Setenv(cliproxyapi.EnvKey, "test-management-key")
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestCodexProxyFallbackResetCreditsAreReturned(t *testing.T) {
+	quotaCalls, resetCalls := 0, 0
+	proxyTestServerWithResetCalls(t, `{"files":[{"auth_index":"codex-one","provider":"codex"}]}`, &quotaCalls, &resetCalls, false)
+	a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
+	out, _, err := captureFetchOutput(t, func() error {
+		return a.fetchOneWithProvider(context.Background(), "cliproxyapi", false, false, provider.Get)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quotaCalls != 1 || resetCalls != 1 {
+		t.Fatalf("quota calls=%d reset-credit calls=%d, want 1/1", quotaCalls, resetCalls)
+	}
+	var results []model.ProviderResult
+	if err := json.Unmarshal([]byte(out), &results); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results=%d, want 1: %s", len(results), out)
+	}
+	account := results[0].Usage.(map[string]any)
+	usage := account["usage"].(map[string]any)
+	resetCredits, ok := usage["resetCredits"].(map[string]any)
+	if !ok || resetCredits["available"] != float64(7) {
+		t.Fatalf("reset credits were not propagated: %#v", usage)
+	}
+}
+
+func TestCodexCombinedFetchKeepsProxyResetDetailsOnLocalAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	t.Setenv("OPENTRACKER_CODEX_ACCESS_TOKEN", "fake-local-token")
+	t.Setenv("OPENTRACKER_CODEX_ACCOUNT_ID", "shared-account")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v8/management/credentials" {
+			_, _ = fmt.Fprint(w, `{"files":[{"auth_index":"proxy-one","provider":"codex","chatgpt_account_id":"shared-account"}]}`)
+			return
+		}
+		var request map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		if request["url"] == "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits" {
+			_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{\"available_count\":7,\"credits\":[{\"reset_type\":\"codex_rate_limits\",\"status\":\"available\",\"expires_at\":null}]}"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{\"plan_type\":\"plus\"}"}`)
+	}))
+	t.Setenv(cliproxyapi.EnvURL, server.URL)
+	t.Setenv(cliproxyapi.EnvKey, "test-management-key")
+	t.Cleanup(server.Close)
+	available := int64(2)
+	localUsage := codex.UsageSnapshot{ResetCredits: &codex.ResetCredits{Available: &available}}
+	a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
+	out, _, err := captureFetchOutput(t, func() error {
+		return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
+			return &fakeCodexProvider{usage: localUsage}, nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []model.ProviderResult
+	if err := json.Unmarshal([]byte(out), &results); err != nil || len(results) != 1 {
+		t.Fatalf("combined output=%s err=%v", out, err)
+	}
+	usage := results[0].Usage.(map[string]any)
+	resetCredits := usage["resetCredits"].(map[string]any)
+	credits, ok := resetCredits["credits"].([]any)
+	if resetCredits["available"] != float64(2) || !ok || len(credits) != 1 || credits[0].(map[string]any)["expiresAt"] != nil {
+		t.Fatalf("local quota count was overwritten or details missing: %#v", resetCredits)
+	}
 }
 
 func TestCodexProxyCombinationAndFailures(t *testing.T) {
@@ -297,7 +388,7 @@ func TestCodexProxyOnlyFetchIsNotCachedAndReportsMissingKey(t *testing.T) {
 	}
 }
 
-func TestLocalCodexFetchKeepsExistingResultWhenProxyIsUnset(t *testing.T) {
+func TestLocalCodexFetchBypassesCacheWhenProxyIsUnset(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
@@ -318,14 +409,14 @@ func TestLocalCodexFetchKeepsExistingResultWhenProxyIsUnset(t *testing.T) {
 	if _, _, err := fetch(false); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 {
-		t.Fatalf("cached fetch calls=%d, want 1", calls)
+	if calls != 2 {
+		t.Fatalf("unforced fetch calls=%d, want 2", calls)
 	}
 	if _, _, err := fetch(true); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("forced fetch calls=%d, want 2", calls)
+	if calls != 3 {
+		t.Fatalf("forced fetch calls=%d, want 3", calls)
 	}
 	var results []model.ProviderResult
 	if err := json.Unmarshal([]byte(out), &results); err != nil {
@@ -333,6 +424,54 @@ func TestLocalCodexFetchKeepsExistingResultWhenProxyIsUnset(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Provider != "codex" {
 		t.Fatalf("unexpected local result: %s", out)
+	}
+}
+
+func TestCodexFetchIgnoresLegacyCacheAcrossCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	t.Setenv(cliproxyapi.EnvKey, "")
+	t.Setenv(cliproxyapi.EnvURL, "")
+	c := cache.New(t.TempDir())
+	legacy := []model.ProviderResult{{Provider: "codex", Usage: map[string]string{"account": "stale-account"}}}
+	if err := c.Set("codex", legacy, time.Minute); err != nil {
+		t.Fatalf("seed legacy cache: %v", err)
+	}
+	a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: c}
+	calls := 0
+	for _, tc := range []struct {
+		credential string
+		force      bool
+	}{
+		{credential: "credential-a"},
+		{credential: "credential-a", force: true},
+		{credential: "credential-b"},
+		{credential: "credential-b", force: true},
+	} {
+		t.Setenv("OPENTRACKER_CODEX_ACCESS_TOKEN", tc.credential)
+		out, _, err := captureFetchOutput(t, func() error {
+			return a.fetchOneWithProvider(context.Background(), "codex", tc.force, false, func(string, *config.Config) (provider.Provider, error) {
+				return &fakeCodexProvider{calls: &calls, usage: map[string]string{"account": tc.credential}}, nil
+			})
+		})
+		if err != nil {
+			t.Fatalf("fetch for %s (force=%t): %v", tc.credential, tc.force, err)
+		}
+		var results []model.ProviderResult
+		if err := json.Unmarshal([]byte(out), &results); err != nil {
+			t.Fatalf("decode fetch output: %v", err)
+		}
+		if len(results) != 1 || results[0].Usage.(map[string]any)["account"] != tc.credential {
+			t.Fatalf("fetch returned wrong account for %s: %s", tc.credential, out)
+		}
+	}
+	if calls != 4 {
+		t.Fatalf("provider fetches=%d, want 4", calls)
+	}
+	var stillLegacy []model.ProviderResult
+	if !c.Get("codex", &stillLegacy) || stillLegacy[0].Usage.(map[string]any)["account"] != "stale-account" {
+		t.Fatal("Codex fetch replaced or removed the legacy cache entry")
 	}
 }
 

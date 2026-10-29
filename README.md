@@ -59,14 +59,14 @@ sudo make install
 yay -S opentracker-cli
 ```
 
-The current test release is `1.5.0-beta.4`. The AUR package `opentracker-cli` may lag behind this source release during beta testing. The planned stable release is `1.5.0`.
+The current stable release is `1.5.0`. The AUR package `opentracker-cli` may not yet match this release.
 
 ## Usage
 
 ### Fetch usage data
 
 ```bash
-# Fetch current usage (cached for 90 seconds)
+# Fetch current usage (OpenCode and local Claude are cached for 90 seconds)
 opentracker fetch opencode-go
 opentracker fetch codex
 opentracker fetch claude
@@ -113,7 +113,7 @@ OpenCode session cookies are stored in the operating system keyring; OpenTracker
 
 The keyring must be available and unlocked when logging in and fetching OpenCode usage. If it is locked or unavailable, unlock or configure your desktop/system keyring and retry; OpenTracker will report an error rather than saving credentials in plaintext. Keyring storage reduces accidental exposure but is not protection from malware or other code running as the same user.
 
-Fetch results are cached for 90 seconds. Use `opentracker fetch opencode-go --force` (or `opencode-zen --force`) to bypass the cache when you need an immediate fresh result. A successful login clears both OpenCode plan caches.
+OpenCode and local Claude fetch results are cached for 90 seconds. Codex, CLIProxyAPI, and combined fetches bypass the usage cache. Use `--force` to skip the cache for providers that use it. A successful OpenCode login clears both OpenCode plan caches.
 
 **Codex** will run the `codex login` command. After authentication completes, you can fetch usage with `opentracker fetch codex`.
 
@@ -125,7 +125,26 @@ For automation, set `OPENTRACKER_CLIPROXYAPI_KEY`. This environment variable tak
 
 `opentracker fetch cliproxyapi` fetches active Codex and Claude credentials exposed by CLIProxyAPI's v8 management API. `opentracker fetch codex` keeps the local Codex result and appends proxy Codex accounts. When a local and proxy Codex account have the same non-empty authoritative ChatGPT account ID, the accounts are deduplicated. If the matching proxy account has an email and the local result does not, OpenTracker copies that email to the local result. It keeps any email already present in the local result. A proxy email is personal information and a display label, not a stable account identity; matching emails alone never trigger deduplication. `fetch all` deduplicates matching Codex accounts but does not copy the proxy email onto the local result. `opentracker fetch claude` keeps the local Claude result when configured and appends proxy Claude accounts. Proxy results use provider `cliproxyapi` and include `accountProvider` to identify the upstream service. CLIProxyAPI does not provide a reliable Claude account ID, so Claude results remain separate even when emails match. Local Claude OAuth results do not include an email; a proxy Claude result may include one if CLIProxyAPI returns it.
 
-Successful accounts go to stdout as JSON. Per-account failures go to stderr with a safe account-list ordinal, and the command exits with an error status if any account fails. A CLIProxyAPI 429 response asks you to retry later. OpenTracker does not refresh proxy tokens. `fetch all` fetches proxy accounts once and does not repeat them through the Codex or Claude fetch. It prints separate JSON arrays for provider groups, not one combined JSON document. Proxy and combined results bypass cache. Local-only fetches keep their existing cache behavior, and Claude's local rate-limit cooldown still applies.
+Successful accounts go to stdout as JSON. Per-account failures go to stderr with a safe account-list ordinal, and the command exits with an error status if any account fails. A CLIProxyAPI 429 response asks you to retry later. OpenTracker does not refresh proxy tokens. `fetch all` fetches proxy accounts once and does not repeat them through the Codex or Claude fetch. It prints separate JSON arrays for provider groups, not one combined JSON document. Codex, proxy and combined results bypass cache; Claude's local rate-limit cooldown still applies.
+
+### Codex manual reset credits
+
+Codex usage may include `resetCredits.available` and `resetCredits.applicable` when the service supplies them. Missing fields mean the count is unknown, not zero. Both local Codex and CLIProxyAPI fetches make a bounded, best-effort read of reset-credit details. A details count takes precedence when present, including a reported zero; a failed details request does not block usage output or replace an unknown count with zero. The `credits` list contains available Codex rate-limit credits returned by the endpoint, but may be capped and incomplete when `available` is larger than the list. `expiresAt` is an RFC3339 timestamp, `null` when the service says a credit does not expire, and omitted when expiry is unknown. For example:
+
+```json
+"resetCredits": {
+  "available": 2,
+  "applicable": 1,
+  "credits": [
+    {"expiresAt": "2026-11-01T12:00:00Z"},
+    {"expiresAt": null}
+  ]
+}
+```
+
+To reset eligible windows for an enabled Codex OAuth account through CLIProxyAPI v8, first inspect `opentracker fetch cliproxyapi` and find its `authIndex` and `accountId`. Then run `opentracker reset codex --account <authIndex>` in an interactive terminal. The prompt shows the account ID's full SHA-256 fingerprint, not the ID itself. On Linux, calculate the expected fingerprint with `printf '%s' '<accountId>' | sha256sum`. Compare it with the prompt and type `RESET` to confirm. This action may consume one reset credit; it is never run by `fetch`.
+
+The command requires a resolvable ChatGPT account ID and a CLIProxyAPI management key. It only sends reset actions through CLIProxyAPI. Direct/local Codex resets and FedRAMP backends are not supported. After a completed operation, a separate reset requires `--new <operation-id>` with the operation ID returned by the previous result, followed by a new confirmation. OpenTracker does not retry consumption automatically. An unknown outcome or failed cooldown cleanup leaves the local journal unresolved and blocks further resets for that account. Do not retry or delete the reset state. Inspect the account and proxy, then seek manual assistance. This fail-closed protection depends on the local state journal and is not shared across machines or state directories. Safe state locking and durable storage are supported on Linux, macOS, FreeBSD, OpenBSD, NetBSD, and DragonFly BSD; other platforms refuse reset actions. The upstream API and CLIProxyAPI can change.
 
 **Claude** reuses the access token from `~/.claude/.credentials.json` and does not start Claude Code or modify its files. Set `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when Claude Code uses a custom config directory. You can instead set `OPENTRACKER_CLAUDE_ACCESS_TOKEN`. An explicitly set token takes precedence, and the API response determines whether it is accepted. OpenTracker does not fall back to a credentials file when the environment variable is set. macOS keychain-only credentials are not supported. The usage endpoint is private to Claude Code and may change. OpenTracker does not refresh tokens, and expired credentials require signing in with Claude Code again. A 429 response creates a credential-specific cooldown that also applies to forced fetches.
 

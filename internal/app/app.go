@@ -122,7 +122,10 @@ func (a *App) fetchOneWithProviderMode(ctx context.Context, providerName string,
 		cacheKey = OpenCodeCacheKey(providerName, opencodeConfig.Workspace, opencodeConfig.CredentialID)
 	}
 
-	if !force {
+	// Codex usage can reset outside OpenTracker, so cached results may be stale.
+	// Its legacy cache key is also shared across accounts.
+	cacheable := providerName != "codex"
+	if cacheable && !force {
 		var cached []model.ProviderResult
 		if a.cache.Get(cacheKey, &cached) {
 			return output.Print(cached)
@@ -151,9 +154,11 @@ func (a *App) fetchOneWithProviderMode(ctx context.Context, providerName string,
 		{Provider: providerName, Usage: usage},
 	}
 
-	if err := a.cache.Set(cacheKey, results, 90*time.Second); err != nil {
-		// Non-fatal: log and continue
-		fmt.Fprintf(os.Stderr, "warning: cannot save cache: %v\n", err)
+	if cacheable {
+		if err := a.cache.Set(cacheKey, results, 90*time.Second); err != nil {
+			// Non-fatal: log and continue
+			fmt.Fprintf(os.Stderr, "warning: cannot save cache: %v\n", err)
+		}
 	}
 
 	return output.Print(results)
@@ -205,6 +210,7 @@ func (a *App) fetchAllWithProvider(ctx context.Context, force bool, getProvider 
 	failed := false
 	localCodexFetched := false
 	localCodexID := ""
+	var localCodexUsage interface{}
 	for _, name := range names {
 		if name == "cliproxyapi" {
 			continue
@@ -221,11 +227,9 @@ func (a *App) fetchAllWithProvider(ctx context.Context, force bool, getProvider 
 					var usage interface{}
 					usage, err = p.Parse(data)
 					if err == nil {
-						err = output.Print([]model.ProviderResult{{Provider: "codex", Usage: usage}})
-						if err == nil {
-							localCodexFetched = true
-							localCodexID = codex.ConfiguredAccountID()
-						}
+						localCodexUsage = usage
+						localCodexFetched = true
+						localCodexID = codex.ConfiguredAccountID()
 					}
 				}
 			}
@@ -270,6 +274,9 @@ func (a *App) fetchAllWithProvider(ctx context.Context, force bool, getProvider 
 				switch account.AccountProvider {
 				case "codex":
 					if localCodexFetched && localCodexID != "" && account.ID == localCodexID {
+						localResult := model.ProviderResult{Provider: "codex", Usage: localCodexUsage}
+						mergeProxyResetCredits(&localResult, account.Usage)
+						localCodexUsage = localResult.Usage
 						continue
 					}
 					codexResults = append(codexResults, model.ProviderResult{Provider: "cliproxyapi", Usage: account})
@@ -291,6 +298,11 @@ func (a *App) fetchAllWithProvider(ctx context.Context, force bool, getProvider 
 					return err
 				}
 			}
+		}
+	}
+	if localCodexFetched {
+		if err := output.Print([]model.ProviderResult{{Provider: "codex", Usage: localCodexUsage}}); err != nil {
+			return err
 		}
 	}
 	if failed {
@@ -340,6 +352,7 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 			seenIDs := make(map[string]struct{}, len(accounts))
 			for _, account := range accounts {
 				if localFetched && includeLocal && account.ID != "" && localID != "" && account.ID == localID {
+					mergeProxyResetCredits(&results[0], account.Usage)
 					if account.Email != "" {
 						switch usage := results[0].Usage.(type) {
 						case codex.UsageSnapshot:
@@ -382,6 +395,46 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 		return fmt.Errorf("one or more CLIProxyAPI accounts failed")
 	}
 	return nil
+}
+
+func mergeProxyResetCredits(local *model.ProviderResult, proxyUsage interface{}) {
+	var proxy *codex.ResetCredits
+	switch usage := proxyUsage.(type) {
+	case codex.UsageSnapshot:
+		proxy = usage.ResetCredits
+	case *codex.UsageSnapshot:
+		if usage != nil {
+			proxy = usage.ResetCredits
+		}
+	}
+	if proxy == nil {
+		return
+	}
+	var localUsage codex.UsageSnapshot
+	switch usage := local.Usage.(type) {
+	case codex.UsageSnapshot:
+		localUsage = usage
+	case *codex.UsageSnapshot:
+		if usage == nil {
+			return
+		}
+		localUsage = *usage
+	default:
+		return
+	}
+	if localUsage.ResetCredits == nil {
+		localUsage.ResetCredits = &codex.ResetCredits{}
+	}
+	if localUsage.ResetCredits.Available == nil {
+		localUsage.ResetCredits.Available = proxy.Available
+	}
+	if localUsage.ResetCredits.Applicable == nil {
+		localUsage.ResetCredits.Applicable = proxy.Applicable
+	}
+	if localUsage.ResetCredits.Credits == nil {
+		localUsage.ResetCredits.Credits = proxy.Credits
+	}
+	local.Usage = localUsage
 }
 
 func (a *App) fetchClaudeAccounts(ctx context.Context, includeLocal bool, force bool, getProvider func(string, *config.Config) (provider.Provider, error)) error {

@@ -21,13 +21,15 @@ import (
 )
 
 const (
-	EnvURL           = "OPENTRACKER_CLIPROXYAPI_URL"
-	EnvKey           = "OPENTRACKER_CLIPROXYAPI_KEY"
-	defaultURL       = "http://127.0.0.1:8317"
-	usageURL         = "https://chatgpt.com/backend-api/wham/usage"
-	claudeUsageURL   = "https://api.anthropic.com/api/oauth/usage"
-	maxResponseSize  = 4 << 20
-	requestUserAgent = "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
+	EnvURL              = "OPENTRACKER_CLIPROXYAPI_URL"
+	EnvKey              = "OPENTRACKER_CLIPROXYAPI_KEY"
+	defaultURL          = "http://127.0.0.1:8317"
+	usageURL            = "https://chatgpt.com/backend-api/wham/usage"
+	resetCreditsURL     = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	claudeUsageURL      = "https://api.anthropic.com/api/oauth/usage"
+	maxResponseSize     = 4 << 20
+	resetCreditsTimeout = 5 * time.Second
+	requestUserAgent    = "codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)"
 )
 
 func init() {
@@ -201,14 +203,25 @@ func fetchWithKey(ctx context.Context, key, only string) ([]Account, []Failure, 
 				failures = append(failures, Failure{Account: accountNumber, Provider: kind, Err: fmt.Errorf("invalid Codex usage response")})
 				continue
 			}
-			if envelope.Usage.PlanType == "" && envelope.Usage.RateLimit == nil && envelope.Usage.Credits == nil {
-				if e = json.Unmarshal(bodyData, &envelope.Usage); e != nil || (envelope.Usage.PlanType == "" && envelope.Usage.RateLimit == nil && envelope.Usage.Credits == nil) {
+			if envelope.Usage.PlanType == "" && envelope.Usage.RateLimit == nil && envelope.Usage.Credits == nil && envelope.Usage.RateLimitResetCredits == nil {
+				if e = json.Unmarshal(bodyData, &envelope.Usage); e != nil || (envelope.Usage.PlanType == "" && envelope.Usage.RateLimit == nil && envelope.Usage.Credits == nil && envelope.Usage.RateLimitResetCredits == nil) {
 					failures = append(failures, Failure{Account: accountNumber, Provider: kind, Err: fmt.Errorf("invalid Codex usage response")})
 					continue
 				}
 			}
 			email := first(envelope.AccountEmail, c.Email)
-			accounts = append(accounts, Account{AccountProvider: kind, ID: accountID(c), AuthIndex: idx, Email: email, Usage: codex.MapUsageResponse(envelope.Usage, email, time.Now())})
+			id := accountID(c)
+			usage := codex.MapUsageResponse(envelope.Usage, email, time.Now())
+			if details := fetchResetCredits(ctx, key, idx, id); details != nil {
+				if usage.ResetCredits == nil {
+					usage.ResetCredits = &codex.ResetCredits{}
+				}
+				if details.Available != nil {
+					usage.ResetCredits.Available = details.Available
+				}
+				usage.ResetCredits.Credits = details.Credits
+			}
+			accounts = append(accounts, Account{AccountProvider: kind, ID: id, AuthIndex: idx, Email: email, Usage: usage})
 		} else {
 			usage, parseErr := claude.ParseUsage(string(bodyData))
 			if parseErr != nil || (usage.FiveHour == nil && usage.SevenDay == nil && usage.Sonnet == nil && usage.Opus == nil) {
@@ -239,6 +252,42 @@ func fetchWithKey(ctx context.Context, key, only string) ([]Account, []Failure, 
 		unique = append(unique, account)
 	}
 	return unique, failures, nil
+}
+
+func fetchResetCredits(ctx context.Context, key, authIndex, accountID string) *codex.ResetCredits {
+	ctx, cancel := context.WithTimeout(ctx, resetCreditsTimeout)
+	defer cancel()
+
+	headers := map[string]string{
+		"Authorization": "Bearer $TOKEN$",
+		"Accept":        "application/json",
+		"Content-Type":  "application/json",
+		"OpenAI-Beta":   "codex-1",
+		"Originator":    "Codex Desktop",
+		"User-Agent":    requestUserAgent,
+	}
+	if accountID != "" {
+		headers["Chatgpt-Account-Id"] = accountID
+	}
+	payload, err := managementRequest(ctx, key, http.MethodPost, "/v8/management/requests/api-call", apiCallRequest{
+		AuthIndex: authIndex,
+		Method:    http.MethodGet,
+		URL:       resetCreditsURL,
+		Header:    headers,
+	})
+	if err != nil {
+		return nil
+	}
+	var result apiCallResponse
+	if json.Unmarshal(payload, &result) != nil || result.StatusCode < 200 || result.StatusCode >= 300 || len(result.Body) == 0 {
+		return nil
+	}
+	body := result.Body
+	var bodyString string
+	if json.Unmarshal(result.Body, &bodyString) == nil {
+		body = []byte(bodyString)
+	}
+	return codex.ParseResetCreditsDetails(body)
 }
 
 func parseCredentials(data []byte) ([]credential, error) {

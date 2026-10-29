@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	usageURL       = "https://chatgpt.com/backend-api/wham/usage"
-	acceptLanguage = "en-US,en;q=0.9"
+	usageURL        = "https://chatgpt.com/backend-api/wham/usage"
+	resetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	acceptLanguage  = "en-US,en;q=0.9"
+	maxResponseSize = 4 << 20
 )
 
 func init() {
@@ -26,14 +28,18 @@ func init() {
 }
 
 type CodexProvider struct {
-	client *http.Client
+	client               *http.Client
+	usageEndpoint        string
+	resetCreditsEndpoint string
 }
 
 func NewProvider(appCfg *config.Config) (provider.Provider, error) {
 	_ = appCfg
 
 	return &CodexProvider{
-		client: &http.Client{Timeout: 30 * time.Second},
+		client:               &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		usageEndpoint:        usageURL,
+		resetCreditsEndpoint: resetCreditsURL,
 	}, nil
 }
 
@@ -50,7 +56,11 @@ func (o *CodexProvider) Fetch(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("codex auth not configured; run 'opentracker login codex', 'codex login', or set %s", envAccessToken)
 	}
 
-	body, err := o.get(ctx, usageURL, auth)
+	usageEndpoint := o.usageEndpoint
+	if usageEndpoint == "" {
+		usageEndpoint = usageURL
+	}
+	body, err := o.get(ctx, usageEndpoint, auth)
 	if err != nil {
 		return "", err
 	}
@@ -60,7 +70,17 @@ func (o *CodexProvider) Fetch(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("cannot decode Codex usage response: %w", err)
 	}
 
-	envelope, err := json.Marshal(fetchEnvelope{UsageResponse: api})
+	resetEndpoint := o.resetCreditsEndpoint
+	if resetEndpoint == "" {
+		resetEndpoint = resetCreditsURL
+	}
+	detailsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	var details *ResetCredits
+	if detailsBody, detailsErr := o.get(detailsCtx, resetEndpoint, auth); detailsErr == nil {
+		details = ParseResetCreditsDetails(detailsBody)
+	}
+	cancel()
+	envelope, err := json.Marshal(fetchEnvelope{UsageResponse: api, ResetCreditsDetails: details})
 	if err != nil {
 		return "", fmt.Errorf("cannot encode Codex usage envelope: %w", err)
 	}
@@ -72,7 +92,17 @@ func (o *CodexProvider) Parse(data string) (interface{}, error) {
 	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 		return nil, fmt.Errorf("cannot decode Codex usage envelope: %w", err)
 	}
-	return mapUsageResponse(envelope.UsageResponse, envelope.AccountEmail, time.Now()), nil
+	snapshot := mapUsageResponse(envelope.UsageResponse, envelope.AccountEmail, time.Now())
+	if envelope.ResetCreditsDetails != nil {
+		if snapshot.ResetCredits == nil {
+			snapshot.ResetCredits = &ResetCredits{}
+		}
+		if envelope.ResetCreditsDetails.Available != nil {
+			snapshot.ResetCredits.Available = envelope.ResetCreditsDetails.Available
+		}
+		snapshot.ResetCredits.Credits = envelope.ResetCreditsDetails.Credits
+	}
+	return snapshot, nil
 }
 
 func (o *CodexProvider) get(ctx context.Context, url string, auth authSource) ([]byte, error) {
@@ -94,9 +124,12 @@ func (o *CodexProvider) get(ctx context.Context, url string, auth authSource) ([
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("cannot read response: %w", err)
+	}
+	if len(body) > maxResponseSize {
+		return nil, fmt.Errorf("response exceeds size limit")
 	}
 
 	switch {
