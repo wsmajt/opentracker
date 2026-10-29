@@ -32,14 +32,15 @@ const (
 // Options contains credentials and paths supplied by the CLI. No credential
 // discovery happens in this package, so tests can use an isolated fake server.
 type Options struct {
-	BaseURL        string
-	Key            string
-	StateDir       string
-	Client         *http.Client
-	AuthIndex      string
-	Confirm        func(accountID string) bool
-	ConfirmDetails func(accountID string, previous *PreviousOperation) bool
-	NewOperation   string
+	BaseURL           string
+	Key               string
+	StateDir          string
+	Client            *http.Client
+	AuthIndex         string
+	ExpectedAccountID string
+	Confirm           func(accountID string) bool
+	ConfirmDetails    func(accountID string, previous *PreviousOperation) bool
+	NewOperation      string
 }
 
 // Result reports the upstream outcome without including account identifiers.
@@ -136,6 +137,9 @@ func Reset(ctx context.Context, o Options) (result Result, retErr error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if o.ExpectedAccountID != "" && selected.accountID != o.ExpectedAccountID {
+		return Result{}, errors.New("selected account does not match the expected account; no reset was sent")
+	}
 	endpointHash := hashString(base)
 	accountHash := hashString(selected.accountID)
 	if err := unresolvedIndexOperation(o.StateDir, endpointHash, selected.authIndex); err != nil {
@@ -181,6 +185,9 @@ func Reset(ctx context.Context, o Options) (result Result, retErr error) {
 	}
 	if selectedAgain.accountID != selected.accountID || selectedAgain.authIndex != selected.authIndex {
 		return Result{}, errors.New("selected account changed; no reset was sent")
+	}
+	if o.ExpectedAccountID != "" && selectedAgain.accountID != o.ExpectedAccountID {
+		return Result{}, errors.New("selected account does not match the expected account; no reset was sent")
 	}
 
 	var rawUUID [16]byte

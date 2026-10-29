@@ -229,7 +229,7 @@ func (a *App) fetchAllWithProvider(ctx context.Context, force bool, getProvider 
 					if err == nil {
 						localCodexUsage = usage
 						localCodexFetched = true
-						localCodexID = codex.ConfiguredAccountID()
+						localCodexID = localCodexAccountID(usage)
 					}
 				}
 			}
@@ -276,6 +276,7 @@ func (a *App) fetchAllWithProvider(ctx context.Context, force bool, getProvider 
 					if localCodexFetched && localCodexID != "" && account.ID == localCodexID {
 						localResult := model.ProviderResult{Provider: "codex", Usage: localCodexUsage}
 						mergeProxyResetCredits(&localResult, account.Usage)
+						mergeProxyResetTarget(&localResult, account, localCodexID)
 						localCodexUsage = localResult.Usage
 						continue
 					}
@@ -315,7 +316,7 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 	_ = force
 	results := make([]model.ProviderResult, 0)
 	failures := 0
-	localID := codex.ConfiguredAccountID()
+	localID := ""
 	localFetched := false
 	if includeLocal && codex.HasConfiguredAuth() {
 		p, err := getProvider("codex", a.config)
@@ -327,6 +328,7 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 				usage, err = p.Parse(data)
 				if err == nil {
 					results = append(results, model.ProviderResult{Provider: "codex", Usage: usage})
+					localID = localCodexAccountID(usage)
 					localFetched = true
 				}
 			}
@@ -353,6 +355,7 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 			for _, account := range accounts {
 				if localFetched && includeLocal && account.ID != "" && localID != "" && account.ID == localID {
 					mergeProxyResetCredits(&results[0], account.Usage)
+					mergeProxyResetTarget(&results[0], account, localID)
 					if account.Email != "" {
 						switch usage := results[0].Usage.(type) {
 						case codex.UsageSnapshot:
@@ -395,6 +398,37 @@ func (a *App) fetchCodexAccounts(ctx context.Context, includeLocal bool, force b
 		return fmt.Errorf("one or more CLIProxyAPI accounts failed")
 	}
 	return nil
+}
+
+func localCodexAccountID(usage interface{}) string {
+	switch snapshot := usage.(type) {
+	case codex.UsageSnapshot:
+		return strings.TrimSpace(snapshot.AccountIDInternal)
+	case *codex.UsageSnapshot:
+		if snapshot != nil {
+			return strings.TrimSpace(snapshot.AccountIDInternal)
+		}
+	}
+	return ""
+}
+
+func mergeProxyResetTarget(local *model.ProviderResult, account cliproxyapi.Account, localID string) {
+	target := account.ResetTarget
+	if !account.ResetSelectorSafe || target == nil || target.AccountID == "" || target.AccountID != localID || target.AccountID != account.ID || target.AuthIndex == "" || target.AuthIndex != account.AuthIndex {
+		return
+	}
+	set := func(usage *codex.UsageSnapshot) {
+		usage.ResetTarget = target
+	}
+	switch usage := local.Usage.(type) {
+	case codex.UsageSnapshot:
+		set(&usage)
+		local.Usage = usage
+	case *codex.UsageSnapshot:
+		if usage != nil {
+			set(usage)
+		}
+	}
 }
 
 func mergeProxyResetCredits(local *model.ProviderResult, proxyUsage interface{}) {

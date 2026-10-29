@@ -95,6 +95,75 @@ func TestResetCancellationDoesNotConsume(t *testing.T) {
 	}
 }
 
+func TestResetExpectedAccountIDMatchAllowsReset(t *testing.T) {
+	var consumes atomic.Int32
+	server := newResetServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case credentialsPath:
+			_, _ = w.Write(credentialsJSON())
+		case apiCallPath:
+			consumes.Add(1)
+			_, _ = w.Write([]byte(`{"status_code":200,"body":"{\"code\":\"no_credit\"}"}`))
+		}
+	})
+	options := testOptions(server.URL, filepath.Join(t.TempDir(), "state"), func(string) bool { return true })
+	options.ExpectedAccountID = testAccount
+	if _, err := Reset(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	if consumes.Load() != 1 {
+		t.Fatalf("consume calls=%d, want 1", consumes.Load())
+	}
+}
+
+func TestResetExpectedAccountIDMismatchSkipsConfirmationAndConsume(t *testing.T) {
+	var consumes atomic.Int32
+	confirmed := false
+	server := newResetServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case credentialsPath:
+			_, _ = w.Write(credentialsJSON())
+		case apiCallPath:
+			consumes.Add(1)
+		}
+	})
+	options := testOptions(server.URL, filepath.Join(t.TempDir(), "state"), func(string) bool {
+		confirmed = true
+		return true
+	})
+	options.ExpectedAccountID = "different-synthetic-account"
+	_, err := Reset(context.Background(), options)
+	if err == nil || confirmed || consumes.Load() != 0 {
+		t.Fatalf("error=%v confirmed=%v consumes=%d", err, confirmed, consumes.Load())
+	}
+	if strings.Contains(err.Error(), testAccount) || strings.Contains(err.Error(), options.ExpectedAccountID) {
+		t.Fatalf("error disclosed an account ID: %v", err)
+	}
+}
+
+func TestResetExpectedAccountIDRecheckedAfterConfirmation(t *testing.T) {
+	changed := base64.RawURLEncoding.EncodeToString([]byte(`{"chatgpt_account_id":"replacement-synthetic-account"}`))
+	var credentialReads, consumes atomic.Int32
+	server := newResetServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case credentialsPath:
+			if credentialReads.Add(1) == 1 {
+				_, _ = w.Write(credentialsJSON())
+				return
+			}
+			_, _ = w.Write([]byte(`{"files":[{"auth_index":"` + testIndex + `","provider":"codex","id_token":"x.` + changed + `.x"}]}`))
+		case apiCallPath:
+			consumes.Add(1)
+		}
+	})
+	options := testOptions(server.URL, filepath.Join(t.TempDir(), "state"), func(string) bool { return true })
+	options.ExpectedAccountID = testAccount
+	_, err := Reset(context.Background(), options)
+	if err == nil || !strings.Contains(err.Error(), "selected account changed") || consumes.Load() != 0 {
+		t.Fatalf("error=%v consumes=%d", err, consumes.Load())
+	}
+}
+
 func TestUncertainConsumeBlocksFurtherAttempts(t *testing.T) {
 	var consumes atomic.Int32
 	server := newResetServer(t, func(w http.ResponseWriter, r *http.Request) {

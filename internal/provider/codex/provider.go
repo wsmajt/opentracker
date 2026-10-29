@@ -80,7 +80,7 @@ func (o *CodexProvider) Fetch(ctx context.Context) (string, error) {
 		details = ParseResetCreditsDetails(detailsBody)
 	}
 	cancel()
-	envelope, err := json.Marshal(fetchEnvelope{UsageResponse: api, ResetCreditsDetails: details})
+	envelope, err := json.Marshal(fetchEnvelope{UsageResponse: api, AccountID: auth.AccountID, ResetCreditsDetails: details})
 	if err != nil {
 		return "", fmt.Errorf("cannot encode Codex usage envelope: %w", err)
 	}
@@ -93,6 +93,7 @@ func (o *CodexProvider) Parse(data string) (interface{}, error) {
 		return nil, fmt.Errorf("cannot decode Codex usage envelope: %w", err)
 	}
 	snapshot := mapUsageResponse(envelope.UsageResponse, envelope.AccountEmail, time.Now())
+	snapshot.AccountIDInternal = strings.TrimSpace(envelope.AccountID)
 	if envelope.ResetCreditsDetails != nil {
 		if snapshot.ResetCredits == nil {
 			snapshot.ResetCredits = &ResetCredits{}

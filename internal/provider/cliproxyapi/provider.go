@@ -47,21 +47,45 @@ func (*managementProvider) Fetch(ctx context.Context) (string, error) {
 	if len(failures) > 0 {
 		return "", fmt.Errorf("one or more CLIProxyAPI accounts failed")
 	}
-	raw, err := json.Marshal(accounts)
+	transport := make([]accountTransport, len(accounts))
+	for i, account := range accounts {
+		transport[i] = accountTransport(account)
+	}
+	raw, err := json.Marshal(transport)
 	return string(raw), err
 }
 func (*managementProvider) Parse(raw string) (interface{}, error) {
+	var transport []accountTransport
+	if err := json.Unmarshal([]byte(raw), &transport); err == nil {
+		accounts := make([]Account, len(transport))
+		for i, account := range transport {
+			accounts[i] = Account(account)
+		}
+		return accounts, nil
+	}
 	var accounts []Account
 	err := json.Unmarshal([]byte(raw), &accounts)
 	return accounts, err
 }
 
 type Account struct {
-	AccountProvider string      `json:"accountProvider"`
-	ID              string      `json:"accountId,omitempty"`
-	AuthIndex       string      `json:"authIndex,omitempty"`
-	Email           string      `json:"accountEmail,omitempty"`
-	Usage           interface{} `json:"usage"`
+	AccountProvider   string             `json:"accountProvider"`
+	ID                string             `json:"accountId,omitempty"`
+	AuthIndex         string             `json:"authIndex,omitempty"`
+	Email             string             `json:"accountEmail,omitempty"`
+	ResetTarget       *codex.ResetTarget `json:"resetTarget,omitempty"`
+	Usage             interface{}        `json:"usage"`
+	ResetSelectorSafe bool               `json:"-"`
+}
+
+type accountTransport struct {
+	AccountProvider   string             `json:"accountProvider"`
+	ID                string             `json:"accountId,omitempty"`
+	AuthIndex         string             `json:"authIndex,omitempty"`
+	Email             string             `json:"accountEmail,omitempty"`
+	ResetTarget       *codex.ResetTarget `json:"resetTarget,omitempty"`
+	Usage             interface{}        `json:"usage"`
+	ResetSelectorSafe bool               `json:"resetSelectorSafe,omitempty"`
 }
 
 type Failure struct {
@@ -87,6 +111,7 @@ type credential struct {
 	IDToken               any            `json:"id_token"`
 	ChatGPTAccountID      string         `json:"chatgpt_account_id"`
 	ChatGPTAccountIDCamel string         `json:"chatgptAccountId"`
+	ResetSelectorSafe     bool           `json:"-"`
 }
 
 type apiCallRequest struct {
@@ -158,6 +183,7 @@ func fetchWithKey(ctx context.Context, key, only string) ([]Account, []Failure, 
 	if err != nil {
 		return nil, nil, err
 	}
+	markSafeResetSelectors(credentials)
 	accounts := make([]Account, 0)
 	failures := make([]Failure, 0)
 	for i, c := range credentials {
@@ -221,7 +247,11 @@ func fetchWithKey(ctx context.Context, key, only string) ([]Account, []Failure, 
 				}
 				usage.ResetCredits.Credits = details.Credits
 			}
-			accounts = append(accounts, Account{AccountProvider: kind, ID: id, AuthIndex: idx, Email: email, Usage: usage})
+			account := Account{AccountProvider: kind, ID: id, AuthIndex: idx, Email: email, Usage: usage, ResetSelectorSafe: c.ResetSelectorSafe}
+			if c.ResetSelectorSafe && id != "" {
+				account.ResetTarget = &codex.ResetTarget{AccountID: id, AuthIndex: idx}
+			}
+			accounts = append(accounts, account)
 		} else {
 			usage, parseErr := claude.ParseUsage(string(bodyData))
 			if parseErr != nil || (usage.FiveHour == nil && usage.SevenDay == nil && usage.Sonnet == nil && usage.Opus == nil) {
@@ -303,6 +333,183 @@ func parseCredentials(data []byte) ([]credential, error) {
 		return nil, fmt.Errorf("CLIProxyAPI credentials response has an invalid files list")
 	}
 	return credentials, nil
+}
+
+func markSafeResetSelectors(credentials []credential) {
+	indexCounts := make(map[string]int)
+	idCounts := make(map[string]int)
+	ids := make([]string, len(credentials))
+	indexes := make([]string, len(credentials))
+	validIndexes := make([]bool, len(credentials))
+	validIDs := make([]bool, len(credentials))
+	safeKinds := make([]bool, len(credentials))
+	credentialIDs := make([][]string, len(credentials))
+	for i, c := range credentials {
+		indexes[i], validIndexes[i] = safeCredentialIndex(c)
+		rowIndexes := map[string]struct{}{}
+		for _, index := range []string{strings.TrimSpace(c.AuthIndex), strings.TrimSpace(c.AuthIndexCamel)} {
+			if index != "" {
+				if _, exists := rowIndexes[index]; exists {
+					continue
+				}
+				rowIndexes[index] = struct{}{}
+				indexCounts[index]++
+			}
+		}
+		safeKinds[i] = safeCodexCredential(c)
+		if !credentialCouldBeCodex(c) {
+			continue
+		}
+		credentialIDs[i], validIDs[i] = safeCredentialAccountIDs(c)
+		if len(credentialIDs[i]) > 0 {
+			ids[i] = credentialIDs[i][0]
+		}
+		seenCredentialIDs := make(map[string]struct{}, len(credentialIDs[i]))
+		for _, id := range credentialIDs[i] {
+			if _, exists := seenCredentialIDs[id]; exists {
+				continue
+			}
+			seenCredentialIDs[id] = struct{}{}
+			idCounts[id]++
+		}
+	}
+	for i := range credentials {
+		credentials[i].ResetSelectorSafe = safeKinds[i] && validIndexes[i] && validIDs[i] && ids[i] != "" && indexCounts[indexes[i]] == 1 && idCounts[ids[i]] == 1
+	}
+}
+
+func safeCredentialIndex(c credential) (string, bool) {
+	authIndex := strings.TrimSpace(c.AuthIndex)
+	camelIndex := strings.TrimSpace(c.AuthIndexCamel)
+	if authIndex != "" && camelIndex != "" && authIndex != camelIndex {
+		return "", false
+	}
+	if authIndex == "" {
+		authIndex = camelIndex
+	}
+	return authIndex, authIndex != ""
+}
+
+func safeCodexCredential(c credential) bool {
+	kind := ""
+	for _, raw := range []string{c.Provider, c.Type} {
+		candidate := strings.ToLower(strings.TrimSpace(raw))
+		if candidate == "" {
+			continue
+		}
+		if candidate != "codex" && candidate != "claude" {
+			return false
+		}
+		if kind != "" && kind != candidate {
+			return false
+		}
+		kind = candidate
+	}
+	return kind == "codex" && !c.Disabled && !strings.EqualFold(c.Status, "disabled")
+}
+
+func credentialCouldBeCodex(c credential) bool {
+	if c.Disabled || strings.EqualFold(c.Status, "disabled") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(c.Provider), "codex") || strings.EqualFold(strings.TrimSpace(c.Type), "codex")
+}
+
+func safeCredentialAccountIDs(c credential) ([]string, bool) {
+	ids := make([]string, 0, 8)
+	valid := true
+	add := func(value any) bool {
+		if value == nil {
+			return true
+		}
+		s, ok := value.(string)
+		if !ok {
+			return false
+		}
+		if strings.TrimSpace(s) != "" {
+			ids = append(ids, strings.TrimSpace(s))
+		}
+		return true
+	}
+	valid = add(c.ChatGPTAccountID) && valid
+	valid = add(c.ChatGPTAccountIDCamel) && valid
+	for _, object := range []map[string]any{c.Metadata, c.Attributes} {
+		for _, key := range []string{"chatgpt_account_id", "chatgptAccountId"} {
+			if !add(object[key]) {
+				valid = false
+			}
+		}
+		claimIDs, ok := strictTokenAccountIDs(object["id_token"])
+		ids = append(ids, claimIDs...)
+		valid = ok && valid
+	}
+	claimIDs, ok := strictTokenAccountIDs(c.IDToken)
+	ids = append(ids, claimIDs...)
+	valid = ok && valid
+	if len(ids) == 0 {
+		return ids, false
+	}
+	for _, id := range ids[1:] {
+		if id != ids[0] {
+			valid = false
+		}
+	}
+	return ids, valid
+}
+
+func strictTokenAccountIDs(value any) ([]string, bool) {
+	if value == nil {
+		return nil, true
+	}
+	var claims map[string]any
+	switch v := value.(type) {
+	case map[string]any:
+		claims = v
+	case string:
+		parts := strings.Split(v, ".")
+		if len(parts) < 2 {
+			return nil, false
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			raw, err = base64.URLEncoding.DecodeString(parts[1])
+		}
+		if err != nil || json.Unmarshal(raw, &claims) != nil || claims == nil {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	ids := make([]string, 0, 4)
+	valid := true
+	appendClaims := func(m map[string]any) bool {
+		claimsValid := true
+		for _, key := range []string{"chatgpt_account_id", "chatgptAccountId"} {
+			v, exists := m[key]
+			if !exists || v == nil {
+				continue
+			}
+			s, ok := v.(string)
+			if !ok {
+				claimsValid = false
+				continue
+			}
+			if strings.TrimSpace(s) != "" {
+				ids = append(ids, strings.TrimSpace(s))
+			}
+		}
+		return claimsValid
+	}
+	valid = appendClaims(claims) && valid
+	if nested, exists := claims["https://api.openai.com/auth"]; exists {
+		auth, ok := nested.(map[string]any)
+		if !ok {
+			valid = false
+		} else {
+			valid = appendClaims(auth) && valid
+		}
+	}
+	return ids, valid
 }
 
 func credentialKind(c credential) string {
@@ -394,53 +601,9 @@ func endpoint() (string, error) {
 }
 
 func accountID(c credential) string {
-	for _, v := range []any{c.ChatGPTAccountID, c.ChatGPTAccountIDCamel, c.Metadata["chatgpt_account_id"], c.Metadata["chatgptAccountId"], c.Attributes["chatgpt_account_id"], c.Attributes["chatgptAccountId"]} {
-		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
-		}
-	}
-	for _, v := range []any{c.IDToken, c.Metadata["id_token"], c.Attributes["id_token"]} {
-		if id := accountIDFromClaims(v); id != "" {
-			return id
-		}
-		s, ok := v.(string)
-		if !ok {
-			continue
-		}
-		parts := strings.Split(s, ".")
-		if len(parts) < 2 {
-			continue
-		}
-		raw, e := base64.RawURLEncoding.DecodeString(parts[1])
-		if e != nil {
-			raw, e = base64.URLEncoding.DecodeString(parts[1])
-		}
-		if e != nil {
-			continue
-		}
-		var claims map[string]any
-		if json.Unmarshal(raw, &claims) == nil {
-			if id := accountIDFromClaims(claims); id != "" {
-				return id
-			}
-		}
-	}
-	return ""
-}
-
-func accountIDFromClaims(value any) string {
-	claims, ok := value.(map[string]any)
-	if !ok {
-		return ""
-	}
-	if nested, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
-		claims = nested
-	}
-	if id, ok := claims["chatgpt_account_id"].(string); ok {
-		return strings.TrimSpace(id)
-	}
-	if id, ok := claims["chatgptAccountId"].(string); ok {
-		return strings.TrimSpace(id)
+	ids, valid := safeCredentialAccountIDs(c)
+	if valid && len(ids) > 0 {
+		return ids[0]
 	}
 	return ""
 }

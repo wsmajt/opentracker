@@ -59,7 +59,7 @@ sudo make install
 yay -S opentracker-cli
 ```
 
-The current stable release is `1.5.0`. The AUR package `opentracker-cli` may not yet match this release.
+The current stable release is `1.5.1`. The AUR package `opentracker-cli` may not yet match this release.
 
 ## Usage
 
@@ -93,6 +93,8 @@ This command runs the installed `opencode` CLI with `stats --json --standalone -
 OpenTracker does not read the OpenCode database, load account credentials, or make network requests for this command. It delegates to the official CLI, which may create or migrate its database. The output omits cost, model, project, and session history data. Install a current OpenTracker binary to use this command, and make sure `opencode` is available on `PATH`.
 
 The `opencode` binary is resolved via `OPENCODE_BIN` first, then `PATH`, then `~/.bun/bin/opencode`, `~/.local/bin/opencode`, and `/usr/local/bin/opencode`. This matters for graphical panels, whose `PATH` is often smaller than a terminal's.
+
+For integrations that select a CLIProxyAPI account, `opentracker reset codex` accepts `--expected-account-id <id>`. Pass the exact account ID from a verified `resetTarget`. OpenTracker checks it against the selected account before confirmation and again before sending the reset request. A mismatch cancels the operation. The flag does not replace the interactive `RESET` confirmation or the local journal protections.
 
 ### Login
 
@@ -142,9 +144,17 @@ Codex usage may include `resetCredits.available` and `resetCredits.applicable` w
 }
 ```
 
-To reset eligible windows for an enabled Codex OAuth account through CLIProxyAPI v8, first inspect `opentracker fetch cliproxyapi` and find its `authIndex` and `accountId`. Then run `opentracker reset codex --account <authIndex>` in an interactive terminal. The prompt shows the account ID's full SHA-256 fingerprint, not the ID itself. On Linux, calculate the expected fingerprint with `printf '%s' '<accountId>' | sha256sum`. Compare it with the prompt and type `RESET` to confirm. This action may consume one reset credit; it is never run by `fetch`.
+When a CLIProxyAPI Codex credential has one unambiguous, consistent account ID and auth index, its output may include `resetTarget` metadata with `accountId` and `authIndex`. A matching local Codex result may include the same metadata when OpenTracker verified the exact proxy account. The account ID in this selector is not a credential or token, but treat it as account data. Output does not include the CLIProxyAPI management key or OAuth tokens. `resetTarget` is omitted if the account ID or auth index is missing, conflicting, duplicated, or otherwise unsafe to select. Never infer a target from an email or account position. Metadata is a selector, not proof that a reset is available or supported by the upstream service.
 
-The command requires a resolvable ChatGPT account ID and a CLIProxyAPI management key. It only sends reset actions through CLIProxyAPI. Direct/local Codex resets and FedRAMP backends are not supported. After a completed operation, a separate reset requires `--new <operation-id>` with the operation ID returned by the previous result, followed by a new confirmation. OpenTracker does not retry consumption automatically. An unknown outcome or failed cooldown cleanup leaves the local journal unresolved and blocks further resets for that account. Do not retry or delete the reset state. Inspect the account and proxy, then seek manual assistance. This fail-closed protection depends on the local state journal and is not shared across machines or state directories. Safe state locking and durable storage are supported on Linux, macOS, FreeBSD, OpenBSD, NetBSD, and DragonFly BSD; other platforms refuse reset actions. The upstream API and CLIProxyAPI can change.
+For a guarded reset of an enabled Codex account through CLIProxyAPI v8, inspect `opentracker fetch cliproxyapi` and select an entry that includes `resetTarget`. Verify its `accountId` and `authIndex` against the intended account using your trusted CLIProxyAPI account list. Then run the command in an interactive terminal, passing both values:
+
+```bash
+opentracker reset codex --account '<authIndex>' --expected-account-id '<accountId>'
+```
+
+OpenTracker requires the selected account ID to match exactly before prompting and checks it again before sending the reset request. Review the account fingerprint shown by the prompt, then type `RESET` to confirm. This action may consume one reset credit. Fetch commands never reset usage. No live upstream reset is claimed or required by this documentation.
+
+The reset command requires a resolvable ChatGPT account ID and a CLIProxyAPI management key. It sends reset actions only through CLIProxyAPI. Direct/local Codex resets and FedRAMP backends are not supported. A completed reset returns an `operation_id`; a separate reset requires `--new <operation-id>` with that exact ID and a new interactive confirmation. OpenTracker does not retry consumption automatically. An unknown outcome or failed cooldown cleanup leaves the local journal unresolved and blocks further resets. Do not retry or delete the reset state. Inspect the account and proxy, then seek manual assistance. The journal is local and is not shared across machines or state directories. Safe locking and durable storage are supported on Linux, macOS, FreeBSD, OpenBSD, NetBSD, and DragonFly BSD. Other platforms refuse reset actions. The upstream API and CLIProxyAPI can change.
 
 **Claude** reuses the access token from `~/.claude/.credentials.json` and does not start Claude Code or modify its files. Set `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` when Claude Code uses a custom config directory. You can instead set `OPENTRACKER_CLAUDE_ACCESS_TOKEN`. An explicitly set token takes precedence, and the API response determines whether it is accepted. OpenTracker does not fall back to a credentials file when the environment variable is set. macOS keychain-only credentials are not supported. The usage endpoint is private to Claude Code and may change. OpenTracker does not refresh tokens, and expired credentials require signing in with Claude Code again. A 429 response creates a credential-specific cooldown that also applies to forced fetches.
 

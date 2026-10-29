@@ -56,6 +56,58 @@ func TestResetCommandRequiresTypedConfirmation(t *testing.T) {
 	}
 }
 
+func TestResetCommandExpectedAccountMismatchDoesNotPromptOrConsume(t *testing.T) {
+	oldExpectedID := resetExpectedID
+	defer func() { resetExpectedID = oldExpectedID }()
+	resetAccount = "fake-index"
+	resetExpectedID = "expected-synthetic-account"
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.Flags().String("expected-account-id", "", "")
+	if err := cmd.Flags().Set("expected-account-id", resetExpectedID); err != nil {
+		t.Fatal(err)
+	}
+	var consumes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v8/management/credentials" {
+			consumes++
+			return
+		}
+		claim := base64.RawURLEncoding.EncodeToString([]byte(`{"chatgpt_account_id":"actual-synthetic-account"}`))
+		_, _ = fmt.Fprintf(w, `{"files":[{"auth_index":"fake-index","provider":"codex","id_token":"x.%s.x"}]}`, claim)
+	}))
+	defer server.Close()
+	var prompt, output strings.Builder
+	err := runCodexReset(cmd, strings.NewReader("RESET\n"), &prompt, &output, func() (string, string, string, error) {
+		return "fake-key", server.URL, filepath.Join(t.TempDir(), "state"), nil
+	}, func() bool { return true })
+	if err == nil || consumes != 0 || strings.Contains(err.Error(), resetExpectedID) || strings.Contains(err.Error(), "actual-synthetic-account") {
+		t.Fatalf("error=%v consumes=%d", err, consumes)
+	}
+	if prompt.Len() != 0 || output.Len() != 0 {
+		t.Fatalf("prompt=%q output=%q", prompt.String(), output.String())
+	}
+	resetExpectedID = ""
+}
+
+func TestResetCommandRejectsExplicitlyEmptyExpectedAccountID(t *testing.T) {
+	resetExpectedID = ""
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.Flags().String("expected-account-id", "", "")
+	if err := cmd.Flags().Set("expected-account-id", ""); err != nil {
+		t.Fatal(err)
+	}
+	resolved := false
+	err := runCodexReset(cmd, strings.NewReader("RESET\n"), &strings.Builder{}, &strings.Builder{}, func() (string, string, string, error) {
+		resolved = true
+		return "", "", "", nil
+	}, func() bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "must not be empty") || resolved {
+		t.Fatalf("error=%v resolved=%v", err, resolved)
+	}
+}
+
 func TestResetCommandPrintsJSONAfterConfirmedFakeReset(t *testing.T) {
 	resetAccount = "fake-index"
 	var requests int

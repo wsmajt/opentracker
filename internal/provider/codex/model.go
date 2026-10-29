@@ -45,14 +45,21 @@ type RateWindow struct {
 }
 
 type UsageSnapshot struct {
-	AccountEmail     string        `json:"accountEmail,omitempty"`
-	Plan             string        `json:"plan,omitempty"`
-	Primary          *RateWindow   `json:"primary,omitempty"`
-	Secondary        *RateWindow   `json:"secondary,omitempty"`
-	CreditsRemaining *float64      `json:"creditsRemaining,omitempty"`
-	ResetCredits     *ResetCredits `json:"resetCredits,omitempty"`
-	UpdatedAt        string        `json:"updatedAt"`
-	Source           string        `json:"source"`
+	AccountEmail      string        `json:"accountEmail,omitempty"`
+	ResetTarget       *ResetTarget  `json:"resetTarget,omitempty"`
+	AccountIDInternal string        `json:"-"`
+	Plan              string        `json:"plan,omitempty"`
+	Primary           *RateWindow   `json:"primary,omitempty"`
+	Secondary         *RateWindow   `json:"secondary,omitempty"`
+	CreditsRemaining  *float64      `json:"creditsRemaining,omitempty"`
+	ResetCredits      *ResetCredits `json:"resetCredits,omitempty"`
+	UpdatedAt         string        `json:"updatedAt"`
+	Source            string        `json:"source"`
+}
+
+type ResetTarget struct {
+	AccountID string `json:"accountId"`
+	AuthIndex string `json:"authIndex"`
 }
 
 type ResetCredits struct {
@@ -174,6 +181,7 @@ func ParseResetCreditsDetails(data []byte) *ResetCredits {
 type fetchEnvelope struct {
 	UsageResponse       UsageResponse `json:"usageResponse"`
 	AccountEmail        string        `json:"accountEmail,omitempty"`
+	AccountID           string        `json:"accountId,omitempty"`
 	ResetCreditsDetails *ResetCredits `json:"resetCreditsDetails,omitempty"`
 }
 

@@ -66,6 +66,9 @@ func TestFetchReadsResetCreditDetailsWithoutBlockingUsage(t *testing.T) {
 			if usage.ResetCredits == nil || usage.ResetCredits.Available == nil || *usage.ResetCredits.Available != tc.wantAvailable || usage.ResetCredits.Applicable == nil || *usage.ResetCredits.Applicable != 1 {
 				t.Fatalf("usage count was not preserved: %#v", usage.ResetCredits)
 			}
+			if usage.AccountIDInternal != "fake-account" {
+				t.Fatalf("fetched account ID=%q, want fake-account", usage.AccountIDInternal)
+			}
 			if len(usage.ResetCredits.Credits) != tc.wantCredits {
 				t.Fatalf("credits=%#v, want %d entries", usage.ResetCredits.Credits, tc.wantCredits)
 			}
@@ -73,7 +76,7 @@ func TestFetchReadsResetCreditDetailsWithoutBlockingUsage(t *testing.T) {
 			if tc.wantJSON != "" && !strings.Contains(string(encoded), tc.wantJSON) {
 				t.Fatalf("round-tripped local JSON lacks %s: %s", tc.wantJSON, encoded)
 			}
-			if strings.Contains(string(encoded), "fake-local-token") || strings.Contains(string(encoded), "private-marker") {
+			if strings.Contains(string(encoded), "fake-local-token") || strings.Contains(string(encoded), "private-marker") || strings.Contains(string(encoded), "fake-account") {
 				t.Fatalf("sensitive data leaked: %s", encoded)
 			}
 		})

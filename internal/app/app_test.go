@@ -52,9 +52,10 @@ func TestOpenCodeProviderErrorPrecedesLegacyCache(t *testing.T) {
 }
 
 type fakeCodexProvider struct {
-	err   error
-	calls *int
-	usage interface{}
+	err       error
+	calls     *int
+	usage     interface{}
+	accountID string
 }
 
 func (*fakeCodexProvider) Name() string { return "codex" }
@@ -65,8 +66,21 @@ func (p *fakeCodexProvider) Fetch(context.Context) (string, error) {
 	return "local", p.err
 }
 func (p *fakeCodexProvider) Parse(string) (interface{}, error) {
+	accountID := p.accountID
 	if p.usage != nil {
+		switch usage := p.usage.(type) {
+		case codex.UsageSnapshot:
+			usage.AccountIDInternal = accountID
+			return usage, nil
+		case *codex.UsageSnapshot:
+			if usage != nil {
+				usage.AccountIDInternal = accountID
+			}
+		}
 		return p.usage, nil
+	}
+	if accountID != "" {
+		return codex.UsageSnapshot{AccountIDInternal: accountID}, nil
 	}
 	return map[string]string{"local": "usage"}, nil
 }
@@ -199,7 +213,7 @@ func TestCodexCombinedFetchKeepsProxyResetDetailsOnLocalAccount(t *testing.T) {
 	a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
 	out, _, err := captureFetchOutput(t, func() error {
 		return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
-			return &fakeCodexProvider{usage: localUsage}, nil
+			return &fakeCodexProvider{usage: localUsage, accountID: "shared-account"}, nil
 		})
 	})
 	if err != nil {
@@ -248,7 +262,7 @@ func TestCodexProxyCombinationAndFailures(t *testing.T) {
 			a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
 			out, stderr, err := captureFetchOutput(t, func() error {
 				return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
-					return &fakeCodexProvider{err: tc.localError, calls: &localCalls}, nil
+					return &fakeCodexProvider{err: tc.localError, calls: &localCalls, accountID: tc.localID}, nil
 				})
 			})
 			if (err != nil) != tc.wantErr {
@@ -318,7 +332,7 @@ func TestCodexProxyEmailLabelsMatchingLocalAccount(t *testing.T) {
 			a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
 			out, stderr, err := captureFetchOutput(t, func() error {
 				return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
-					return &fakeCodexProvider{usage: localUsage}, nil
+					return &fakeCodexProvider{usage: localUsage, accountID: tc.localID}, nil
 				})
 			})
 			if err != nil {
@@ -352,6 +366,92 @@ func TestCodexProxyEmailLabelsMatchingLocalAccount(t *testing.T) {
 				t.Fatalf("local results=%d proxy results=%d, want one local and proxy=%t; output=%s", localCount, proxyCount, tc.wantProxy, out)
 			}
 		})
+	}
+}
+
+func TestCodexResetTargetRequiresUniqueProxySelector(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files string
+		want  bool
+	}{
+		{name: "unique matching credential", files: `{"files":[{"auth_index":"proxy-index","provider":"codex","chatgpt_account_id":"local-id"}]}`, want: true},
+		{name: "duplicate account ID", files: `{"files":[{"auth_index":"one","provider":"codex","chatgpt_account_id":"local-id"},{"auth_index":"two","provider":"codex","chatgpt_account_id":"local-id"}]}`},
+		{name: "duplicate index", files: `{"files":[{"auth_index":"proxy-index","provider":"codex","chatgpt_account_id":"local-id"},{"auth_index":"proxy-index","provider":"claude"}]}`},
+		{name: "conflicting account claims", files: `{"files":[{"auth_index":"proxy-index","provider":"codex","chatgpt_account_id":"local-id","chatgptAccountId":"other-id"}]}`},
+		{name: "unmatched local account", files: `{"files":[{"auth_index":"proxy-index","provider":"codex","chatgpt_account_id":"other-id"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+			t.Setenv("OPENTRACKER_CODEX_ACCESS_TOKEN", "fake-local-token")
+			t.Setenv("OPENTRACKER_CODEX_ACCOUNT_ID", "local-id")
+			calls := 0
+			proxyTestServer(t, tc.files, &calls)
+			a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
+			out, _, err := captureFetchOutput(t, func() error {
+				return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
+					return &fakeCodexProvider{usage: codex.UsageSnapshot{}, accountID: "local-id"}, nil
+				})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var results []map[string]any
+			if err := json.Unmarshal([]byte(out), &results); err != nil {
+				t.Fatalf("decode output: %v; output=%q", err, out)
+			}
+			var usage map[string]any
+			for _, result := range results {
+				if result["provider"] == "codex" {
+					usage = result["usage"].(map[string]any)
+				}
+			}
+			if usage == nil {
+				t.Fatalf("local Codex result missing: %s", out)
+			}
+			target, exists := usage["resetTarget"]
+			if exists != tc.want {
+				t.Fatalf("resetTarget present=%t, want %t, usage=%#v", exists, tc.want, usage)
+			}
+			if tc.want {
+				selector := target.(map[string]any)
+				if selector["accountId"] != "local-id" || selector["authIndex"] != "proxy-index" {
+					t.Fatalf("unexpected resetTarget: %#v", selector)
+				}
+			}
+		})
+	}
+}
+
+func TestCodexProxyMergeUsesFetchedIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex"))
+	t.Setenv("OPENTRACKER_CODEX_ACCESS_TOKEN", "fake-local-token")
+	t.Setenv("OPENTRACKER_CODEX_ACCOUNT_ID", "account-b")
+	calls := 0
+	proxyTestServer(t, `{"files":[{"auth_index":"proxy-index","provider":"codex","chatgpt_account_id":"account-b"}]}`, &calls)
+	a := &App{config: &config.Config{Providers: map[string]json.RawMessage{}}, cache: cache.New(t.TempDir())}
+	out, _, err := captureFetchOutput(t, func() error {
+		return a.fetchOneWithProvider(context.Background(), "codex", false, false, func(string, *config.Config) (provider.Provider, error) {
+			return &fakeCodexProvider{usage: codex.UsageSnapshot{}, accountID: "account-a"}, nil
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(out), &results); err != nil || len(results) != 2 {
+		t.Fatalf("decode output: %v; output=%q", err, out)
+	}
+	localUsage := results[0]["usage"].(map[string]any)
+	if _, exists := localUsage["resetTarget"]; exists {
+		t.Fatalf("mismatched proxy identity was merged: %#v", localUsage)
+	}
+	if strings.Contains(out, "account-a") {
+		t.Fatalf("internal fetched account ID appeared in stdout: %s", out)
 	}
 }
 
@@ -552,7 +652,7 @@ func TestFetchAllDeduplicatesCodexOnlyAfterSuccessfulLocalFetch(t *testing.T) {
 					if name != "codex" {
 						t.Fatalf("unexpected local provider construction: %s", name)
 					}
-					return &fakeCodexProvider{err: tc.localError, calls: &localCalls}, nil
+					return &fakeCodexProvider{err: tc.localError, calls: &localCalls, accountID: "shared-id"}, nil
 				})
 			})
 			if (err != nil) != tc.wantErr {

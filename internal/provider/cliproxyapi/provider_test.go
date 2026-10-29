@@ -73,8 +73,11 @@ func TestFetchCodexCredentials(t *testing.T) {
 		t.Fatalf("reset-credit requests=%d, want 1 per Codex account", resetCalls)
 	}
 	usage, ok := accounts[0].Usage.(codex.UsageSnapshot)
-	if accounts[0].ID != "acct-1" || accounts[0].Email != "same@example.test" || !ok || usage.Plan != "plus" || accounts[1].ID != "acct-2" {
+	if accounts[0].ID != "acct-1" || accounts[0].Email != "same@example.test" || !accounts[0].ResetSelectorSafe || !ok || usage.Plan != "plus" || accounts[1].ID != "acct-2" || !accounts[1].ResetSelectorSafe {
 		t.Fatalf("unexpected account: %+v", accounts[0])
+	}
+	if accounts[0].ResetTarget == nil || accounts[0].ResetTarget.AccountID != "acct-1" || accounts[0].ResetTarget.AuthIndex != "idx-1" {
+		t.Fatalf("missing verified reset target: %#v", accounts[0].ResetTarget)
 	}
 	if usageCall["method"] != "GET" || usageCall["url"] != usageURL || usageCall["authIndex"] != "idx-2" {
 		t.Fatalf("unexpected usage request: %#v", usageCall)
@@ -84,7 +87,7 @@ func TestFetchCodexCredentials(t *testing.T) {
 		t.Fatalf("unexpected headers: %#v", header)
 	}
 	serialized, _ := json.Marshal(accounts)
-	if strings.Contains(string(serialized), "management-secret") || strings.Contains(string(serialized), "chatgpt_account_id\":\"acct-1\"") {
+	if strings.Contains(string(serialized), "management-secret") || strings.Contains(string(serialized), "chatgpt_account_id\":\"acct-1\"") || strings.Contains(string(serialized), "resetSelectorSafe") {
 		t.Fatal("credential leaked into account result")
 	}
 }
@@ -381,5 +384,100 @@ func TestAccountIDUsesOnlyAuthoritativeClaims(t *testing.T) {
 	}
 	if got := accountID(credential{IDToken: map[string]any{"email": "acct-object"}}); got != "" {
 		t.Fatalf("email claim used as account ID: %q", got)
+	}
+}
+
+func TestMarkSafeResetSelectors(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		credentials []credential
+		want        []bool
+	}{
+		{name: "unique codex account", credentials: []credential{{AuthIndex: "idx", Provider: "codex", ChatGPTAccountID: "acct"}}, want: []bool{true}},
+		{name: "missing account ID", credentials: []credential{{AuthIndex: "idx", Provider: "codex"}}, want: []bool{false}},
+		{name: "duplicate account ID", credentials: []credential{{AuthIndex: "one", Provider: "codex", ChatGPTAccountID: "acct"}, {AuthIndex: "two", Type: "codex", ChatGPTAccountID: "acct"}}, want: []bool{false, false}},
+		{name: "duplicate index across providers", credentials: []credential{{AuthIndex: "same", Provider: "codex", ChatGPTAccountID: "acct"}, {AuthIndex: "same", Provider: "claude"}}, want: []bool{false, false}},
+		{name: "conflicting auth fields", credentials: []credential{{AuthIndex: "one", AuthIndexCamel: "two", Provider: "codex", ChatGPTAccountID: "acct"}}, want: []bool{false}},
+		{name: "conflicting account claims", credentials: []credential{{AuthIndex: "idx", Provider: "codex", ChatGPTAccountID: "acct-one", ChatGPTAccountIDCamel: "acct-two"}}, want: []bool{false}},
+		{name: "top-level token claim with empty auth object", credentials: []credential{{AuthIndex: "idx", Provider: "codex", IDToken: map[string]any{"chatgpt_account_id": "acct", "https://api.openai.com/auth": map[string]any{}}}}, want: []bool{true}},
+		{name: "empty snake-case token claim with camel-case claim", credentials: []credential{{AuthIndex: "idx", Provider: "codex", IDToken: map[string]any{"chatgpt_account_id": "", "chatgptAccountId": "acct"}}}, want: []bool{true}},
+		{name: "conflicting top-level and nested token claims", credentials: []credential{{AuthIndex: "idx", Provider: "codex", IDToken: map[string]any{"chatgpt_account_id": "acct-one", "https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "acct-two"}}}}, want: []bool{false}},
+		{name: "provider types conflict", credentials: []credential{{AuthIndex: "idx", Provider: "codex", Type: "claude", ChatGPTAccountID: "acct"}}, want: []bool{false}},
+		{name: "conflicting row taints duplicate ID", credentials: []credential{{AuthIndex: "one", Provider: "codex", ChatGPTAccountID: "acct-a"}, {AuthIndex: "two", Provider: "codex", Type: "claude", ChatGPTAccountID: "acct-a"}}, want: []bool{false, false}},
+		{name: "unsupported provider", credentials: []credential{{AuthIndex: "idx", Provider: "gemini", ChatGPTAccountID: "acct"}}, want: []bool{false}},
+		{name: "malformed token claims", credentials: []credential{{AuthIndex: "idx", Provider: "codex", ChatGPTAccountID: "acct", IDToken: "not-a-jwt"}}, want: []bool{false}},
+		{name: "collect ID after invalid metadata", credentials: []credential{{AuthIndex: "one", Provider: "codex", ChatGPTAccountID: "acct-a"}, {AuthIndex: "two", Provider: "codex", Metadata: map[string]any{"chatgpt_account_id": 42}, Attributes: map[string]any{"chatgpt_account_id": "acct-a"}}}, want: []bool{false, false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			markSafeResetSelectors(tc.credentials)
+			for i, want := range tc.want {
+				if got := tc.credentials[i].ResetSelectorSafe; got != want {
+					t.Errorf("credential %d selector safe=%t, want %t", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchEmitsOnlyVerifiedResetTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		files     string
+		wantCount int
+		wantSafe  int
+	}{
+		{name: "single credential", files: `{"files":[{"auth_index":"one","provider":"codex","chatgpt_account_id":"acct-a"}]}`, wantCount: 1, wantSafe: 1},
+		{name: "duplicate auth index", files: `{"files":[{"auth_index":"same","provider":"codex","chatgpt_account_id":"acct-a"},{"auth_index":"same","provider":"codex","chatgpt_account_id":"acct-b"}]}`, wantCount: 2},
+		{name: "duplicate account ID", files: `{"files":[{"auth_index":"one","provider":"codex","chatgpt_account_id":"acct-a"},{"auth_index":"two","provider":"codex","chatgpt_account_id":"acct-a"}]}`, wantCount: 1},
+		{name: "conflicting auth fields", files: `{"files":[{"auth_index":"one","authIndex":"two","provider":"codex","chatgpt_account_id":"acct-a"}]}`, wantCount: 1},
+		{name: "top-level token claim with empty auth object", files: `{"files":[{"auth_index":"one","provider":"codex","id_token":{"chatgpt_account_id":"acct-a","https://api.openai.com/auth":{}}}]}`, wantCount: 1, wantSafe: 1},
+		{name: "empty snake-case token claim with camel-case claim", files: `{"files":[{"auth_index":"one","provider":"codex","id_token":{"chatgpt_account_id":"","chatgptAccountId":"acct-a"}}]}`, wantCount: 1, wantSafe: 1},
+		{name: "conflicting token claims", files: `{"files":[{"auth_index":"one","provider":"codex","id_token":{"chatgpt_account_id":"acct-a","https://api.openai.com/auth":{"chatgpt_account_id":"acct-b"}}}]}`, wantCount: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateProxyProviderEnvironment(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v8/management/credentials" {
+					_, _ = fmt.Fprint(w, tc.files)
+					return
+				}
+				var request apiCallRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if request.URL == resetCreditsURL {
+					_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{}"}`)
+					return
+				}
+				_, _ = fmt.Fprint(w, `{"status_code":200,"body":"{\"plan_type\":\"plus\"}"}`)
+			}))
+			defer server.Close()
+			t.Setenv(EnvURL, server.URL)
+			t.Setenv(EnvKey, "management-test-key")
+			accounts, failures, err := FetchCodexWithConfig(t.Context(), &config.Config{Providers: map[string]json.RawMessage{}})
+			if err != nil || len(failures) != 0 || len(accounts) != tc.wantCount {
+				t.Fatalf("accounts=%d failures=%v err=%v", len(accounts), failures, err)
+			}
+			serialized, err := json.Marshal(accounts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			safeCount := 0
+			for _, account := range accounts {
+				if account.ResetTarget != nil {
+					safeCount++
+					if account.ResetTarget.AccountID != account.ID || account.ResetTarget.AuthIndex != account.AuthIndex {
+						t.Fatalf("reset target does not match account: %#v", account)
+					}
+				}
+			}
+			if safeCount != tc.wantSafe {
+				t.Fatalf("safe targets=%d want %d; JSON=%s", safeCount, tc.wantSafe, serialized)
+			}
+			if tc.wantSafe == 0 && strings.Contains(string(serialized), `"resetTarget"`) {
+				t.Fatalf("unsafe reset target emitted: %s", serialized)
+			}
+		})
 	}
 }

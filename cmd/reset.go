@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	resetAccount string
-	resetNew     string
-	resetInput   io.Reader   = os.Stdin
-	resetTTY                 = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-	resetResolve keyResolver = resolveCodexResetCredentials
+	resetAccount    string
+	resetExpectedID string
+	resetNew        string
+	resetInput      io.Reader   = os.Stdin
+	resetTTY                    = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	resetResolve    keyResolver = resolveCodexResetCredentials
 )
 
 var resetCmd = &cobra.Command{
@@ -68,6 +69,9 @@ func resolveCodexResetCredentials() (string, string, string, error) {
 }
 
 func runCodexReset(cmd *cobra.Command, input io.Reader, prompt, output io.Writer, resolve keyResolver, isTerminal func() bool) error {
+	if cmd.Flags().Changed("expected-account-id") && resetExpectedID == "" {
+		return errors.New("--expected-account-id must not be empty")
+	}
 	if strings.TrimSpace(resetAccount) == "" {
 		return errors.New("--account is required")
 	}
@@ -81,7 +85,7 @@ func runCodexReset(cmd *cobra.Command, input io.Reader, prompt, output io.Writer
 	ctx, cancel := context.WithTimeout(cmd.Context(), 45*time.Second)
 	defer cancel()
 	result, err := resetcodex.Reset(ctx, resetcodex.Options{
-		BaseURL: base, Key: key, StateDir: stateDir, AuthIndex: resetAccount, NewOperation: resetNew,
+		BaseURL: base, Key: key, StateDir: stateDir, AuthIndex: resetAccount, ExpectedAccountID: resetExpectedID, NewOperation: resetNew,
 		ConfirmDetails: func(accountID string, previous *resetcodex.PreviousOperation) bool {
 			if _, writeErr := fmt.Fprintln(prompt, "CLIProxyAPI Codex reset. Direct/local Codex reset is not supported."); writeErr != nil {
 				return false
@@ -117,6 +121,7 @@ func runCodexReset(cmd *cobra.Command, input io.Reader, prompt, output io.Writer
 
 func init() {
 	resetCodexCmd.Flags().StringVar(&resetAccount, "account", "", "CLIProxyAPI auth index for the Codex account")
+	resetCodexCmd.Flags().StringVar(&resetExpectedID, "expected-account-id", "", "require the resolved Codex account ID to match this exact value")
 	resetCodexCmd.Flags().StringVar(&resetNew, "new", "", "completed operation ID to confirm a separate reset")
 	resetCmd.AddCommand(resetCodexCmd)
 	rootCmd.AddCommand(resetCmd)
